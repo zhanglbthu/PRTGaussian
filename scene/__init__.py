@@ -27,6 +27,11 @@ class Scene:
         :param path: Path to colmap scene main folder.
         """
         self.model_path = args.model_path
+        
+        # change: Create model path if it does not exist
+        if not os.path.exists(self.model_path):
+            os.makedirs(self.model_path)
+        
         self.loaded_iter = None
         self.gaussians = gaussians
 
