@@ -46,7 +46,7 @@ def loadCam(args, id, cam_info, resolution_scale):
     if resized_image_rgb.shape[1] == 4:
         loaded_mask = resized_image_rgb[3:4, ...]
 
-    return Camera(colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T, 
+    return Camera(colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T, R_light=cam_info.R_light, T_light=cam_info.T_light,
                   FoVx=cam_info.FovX, FoVy=cam_info.FovY, 
                   image=gt_image, gt_alpha_mask=loaded_mask,
                   image_name=cam_info.image_name, uid=id, data_device=args.data_device)
@@ -69,6 +69,17 @@ def camera_to_JSON(id, camera : Camera):
     pos = W2C[:3, 3]
     rot = W2C[:3, :3]
     serializable_array_2d = [x.tolist() for x in rot]
+    
+    Rt_light = np.zeros((4, 4))
+    Rt_light[:3, :3] = camera.R_light.transpose()
+    Rt_light[:3, 3] = camera.T_light
+    Rt_light[3, 3] = 1.0
+    
+    W2C_light = np.linalg.inv(Rt_light)
+    pos_light = W2C_light[:3, 3]
+    rot_light = W2C_light[:3, :3]
+    serializable_array_2d_light = [x.tolist() for x in rot_light]
+    
     camera_entry = {
         'id' : id,
         'img_name' : camera.image_name,
@@ -76,6 +87,8 @@ def camera_to_JSON(id, camera : Camera):
         'height' : camera.height,
         'position': pos.tolist(),
         'rotation': serializable_array_2d,
+        'position_light': pos_light.tolist(),
+        'rotation_light': serializable_array_2d_light,
         'fy' : fov2focal(camera.FovY, camera.height),
         'fx' : fov2focal(camera.FovX, camera.width)
     }

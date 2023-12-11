@@ -27,6 +27,8 @@ class CameraInfo(NamedTuple):
     uid: int
     R: np.array
     T: np.array
+    R_light: np.array
+    T_light: np.array
     FovY: np.array
     FovX: np.array
     image: np.array
@@ -34,16 +36,10 @@ class CameraInfo(NamedTuple):
     image_name: str
     width: int
     height: int
-class LightInfo(NamedTuple):
-    uid: int
-    R: np.array
-    T: np.array
 class SceneInfo(NamedTuple):
     point_cloud: BasicPointCloud
     train_cameras: list
     test_cameras: list
-    train_lights: list
-    test_lights: list
     nerf_normalization: dict
     ply_path: str
 
@@ -203,6 +199,14 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
             R = np.transpose(w2c[:3,:3])  # R is stored transposed due to 'glm' in CUDA code
             T = w2c[:3, 3]
 
+            c2w_light = np.array(frame["transform_matrix_sun"])
+            # change from OpenGL/Blender camera axes (Y up, Z back) to COLMAP (Y down, Z forward)
+            c2w_light[:3, 1:3] *= -1
+            # get the world-to-camera transform and set R, T
+            w2c_light = np.linalg.inv(c2w_light)
+            R_light = np.transpose(w2c_light[:3,:3])  # R is stored transposed due to 'glm' in CUDA code
+            T_light = w2c_light[:3, 3]
+            
             image_path = os.path.join(path, cam_name)
             image_name = Path(cam_name).stem
             image = Image.open(image_path)
@@ -219,43 +223,48 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
             FovY = fovy 
             FovX = fovx
 
-            cam_infos.append(CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
+            cam_infos.append(CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image, R_light=R_light, T_light=T_light,
                             image_path=image_path, image_name=image_name, width=image.size[0], height=image.size[1]))
             
     return cam_infos
 
 # change
-def readLightsFromTransforms(path, transformsfile):
-    light_infos = []
-    with open(os.path.join(path, transformsfile)) as json_file:
-        contents = json.load(json_file)
-        frames = contents["frames"]
-        for idx, frame in enumerate(frames):
-            c2w = np.array(frame["transform_matrix_sun"])
-            # change from OpenGL/Blender camera axes (Y up, Z back) to COLMAP (Y down, Z forward)
-            c2w[:3, 1:3] *= -1
-            # get the world-to-camera transform and set R, T
-            w2c = np.linalg.inv(c2w)
-            R = np.transpose(w2c[:3,:3])  # R is stored transposed due to 'glm' in CUDA code
-            T = w2c[:3, 3]
+# def readLightsFromTransforms(path, transformsfile):
+#     light_infos = []
+#     with open(os.path.join(path, transformsfile)) as json_file:
+#         contents = json.load(json_file)
+#         frames = contents["frames"]
+#         for idx, frame in enumerate(frames):
+#             c2w = np.array(frame["transform_matrix_sun"])
+#             # change from OpenGL/Blender camera axes (Y up, Z back) to COLMAP (Y down, Z forward)
+#             c2w[:3, 1:3] *= -1
+#             # get the world-to-camera transform and set R, T
+#             w2c = np.linalg.inv(c2w)
+#             R = np.transpose(w2c[:3,:3])  # R is stored transposed due to 'glm' in CUDA code
+#             T = w2c[:3, 3]
             
-            light_infos.append(LightInfo(uid=idx, R=R, T=T))
-    return light_infos
+#             light_infos.append(LightInfo(uid=idx, R=R, T=T))
+#     return light_infos
 
 def readNerfSyntheticInfo(path, white_background, eval, extension=".png", llffhold=8):
     print("Reading Training Transforms")
-    train_cam_infos = readCamerasFromTransforms(path, "transforms_train.json", white_background, extension)
-    train_light_infos = readLightsFromTransforms(path, "transforms_train.json") # change
+    cam_infos = readCamerasFromTransforms(path, "transforms_train.json", white_background, extension)
+    # light_infos = readLightsFromTransforms(path, "transforms_train.json") # change
     # print("Reading Test Transforms")
     # test_cam_infos = readCamerasFromTransforms(path, "transforms_test.json", white_background, extension)
     
-    if not eval:
-        # train_cam_infos.extend(test_cam_infos)
-        test_cam_infos = []
-        test_light_infos = []
+    if eval:
+        train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 0]
+        test_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold == 0]
+        
+        # train_light_infos = [l for idx, l in enumerate(light_infos) if idx % llffhold != 0]
+        # test_light_infos = [l for idx, l in enumerate(light_infos) if idx % llffhold == 0]
     else:
-        test_cam_infos = [c for idx, c in enumerate(train_cam_infos) if idx % llffhold == 0]
-        test_light_infos = [l for idx, l in enumerate(train_light_infos) if idx % llffhold == 0]
+        train_cam_infos = cam_infos
+        test_cam_infos = []
+        
+        # train_light_infos = light_infos
+        # test_light_infos = []
 
     nerf_normalization = getNerfppNorm(train_cam_infos)
 
@@ -279,8 +288,6 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png", llffho
     scene_info = SceneInfo(point_cloud=pcd,
                            train_cameras=train_cam_infos,
                            test_cameras=test_cam_infos,
-                           train_lights=train_light_infos,
-                           test_lights=test_light_infos,
                            nerf_normalization=nerf_normalization,
                            ply_path=ply_path)
     return scene_info

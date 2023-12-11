@@ -3,7 +3,7 @@ IMAGE_FOLDER="/root/autodl-tmp/blender_code/shadow_neus/blend_files/point_light/
 ROOT_FOLDER="/root/autodl-tmp/gaussian-splatting/blender/hotdog_FixLight"
 DATA_FOLDER="$ROOT_FOLDER"
 INPUT_FOLDER="$ROOT_FOLDER/data/images"
-OUTPUT_FOLDER="$ROOT_FOLDER/test/version1"
+OUTPUT_FOLDER="$ROOT_FOLDER/test/version_binding"
 
 TMP_FOLDER="/root/autodl-tmp/code"
 
