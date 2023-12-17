@@ -29,6 +29,10 @@ class CameraInfo(NamedTuple):
     T: np.array
     R_light: np.array
     T_light: np.array
+    cam_theta: float
+    cam_phi: float
+    light_theta: float
+    light_phi: float
     FovY: np.array
     FovX: np.array
     image: np.array
@@ -198,7 +202,11 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
             w2c = np.linalg.inv(c2w)
             R = np.transpose(w2c[:3,:3])  # R is stored transposed due to 'glm' in CUDA code
             T = w2c[:3, 3]
-
+            
+            # 计算俯仰角和方位角
+            cam_phi = np.arctan2(R[1, 0], R[0, 0])
+            cam_theta = np.arctan2(-R[2, 0], np.sqrt(R[2, 1]**2 + R[2, 2]**2))
+            
             c2w_light = np.array(frame["transform_matrix_sun"])
             # change from OpenGL/Blender camera axes (Y up, Z back) to COLMAP (Y down, Z forward)
             c2w_light[:3, 1:3] *= -1
@@ -206,6 +214,9 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
             w2c_light = np.linalg.inv(c2w_light)
             R_light = np.transpose(w2c_light[:3,:3])  # R is stored transposed due to 'glm' in CUDA code
             T_light = w2c_light[:3, 3]
+            
+            light_phi = np.arctan2(R_light[1, 0], R_light[0, 0])
+            light_theta = np.arctan2(-R_light[2, 0], np.sqrt(R_light[2, 1]**2 + R_light[2, 2]**2))
             
             image_path = os.path.join(path, cam_name)
             image_name = Path(cam_name).stem
@@ -224,47 +235,21 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
             FovX = fovx
 
             cam_infos.append(CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image, R_light=R_light, T_light=T_light,
+                            cam_phi=cam_phi, cam_theta=cam_theta, light_phi=light_phi, light_theta=light_theta,
                             image_path=image_path, image_name=image_name, width=image.size[0], height=image.size[1]))
             
     return cam_infos
 
-# change
-# def readLightsFromTransforms(path, transformsfile):
-#     light_infos = []
-#     with open(os.path.join(path, transformsfile)) as json_file:
-#         contents = json.load(json_file)
-#         frames = contents["frames"]
-#         for idx, frame in enumerate(frames):
-#             c2w = np.array(frame["transform_matrix_sun"])
-#             # change from OpenGL/Blender camera axes (Y up, Z back) to COLMAP (Y down, Z forward)
-#             c2w[:3, 1:3] *= -1
-#             # get the world-to-camera transform and set R, T
-#             w2c = np.linalg.inv(c2w)
-#             R = np.transpose(w2c[:3,:3])  # R is stored transposed due to 'glm' in CUDA code
-#             T = w2c[:3, 3]
-            
-#             light_infos.append(LightInfo(uid=idx, R=R, T=T))
-#     return light_infos
-
 def readNerfSyntheticInfo(path, white_background, eval, extension=".png", llffhold=8):
     print("Reading Training Transforms")
     cam_infos = readCamerasFromTransforms(path, "transforms_train.json", white_background, extension)
-    # light_infos = readLightsFromTransforms(path, "transforms_train.json") # change
-    # print("Reading Test Transforms")
-    # test_cam_infos = readCamerasFromTransforms(path, "transforms_test.json", white_background, extension)
     
     if eval:
         train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 0]
         test_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold == 0]
-        
-        # train_light_infos = [l for idx, l in enumerate(light_infos) if idx % llffhold != 0]
-        # test_light_infos = [l for idx, l in enumerate(light_infos) if idx % llffhold == 0]
     else:
         train_cam_infos = cam_infos
         test_cam_infos = []
-        
-        # train_light_infos = light_infos
-        # test_light_infos = []
 
     nerf_normalization = getNerfppNorm(train_cam_infos)
 

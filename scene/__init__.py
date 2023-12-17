@@ -67,17 +67,6 @@ class Scene:
                 json_cams.append(camera_to_JSON(id, cam))
             with open(os.path.join(self.model_path, "cameras.json"), 'w') as file:
                 json.dump(json_cams, file)
-                
-            # json_lights = []
-            # lightlist = []
-            # if scene_info.test_lights:
-            #     lightlist.extend(scene_info.test_lights)
-            # if scene_info.train_lights:
-            #     lightlist.extend(scene_info.train_lights)
-            # for id, light in enumerate(lightlist):
-            #     json_lights.append(light_to_JSON(id, light))
-            # with open(os.path.join(self.model_path, "lights.json"), 'w') as file:
-            #     json.dump(json_lights, file)
 
         if shuffle:
             random.shuffle(scene_info.train_cameras)  # Multi-res consistent random shuffling

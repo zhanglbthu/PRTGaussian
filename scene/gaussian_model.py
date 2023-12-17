@@ -21,6 +21,8 @@ from simple_knn._C import distCUDA2
 from utils.graphics_utils import BasicPointCloud
 from utils.general_utils import strip_symmetric, build_scaling_rotation
 
+from model.mlp import SHNetwork
+
 class GaussianModel:
 
     def setup_functions(self):
@@ -56,6 +58,9 @@ class GaussianModel:
         self.optimizer = None
         self.percent_dense = 0
         self.spatial_lr_scale = 0
+        self.sh_mlp = SHNetwork()
+        if torch.cuda.is_available():
+            self.sh_mlp.cuda()
         self.setup_functions()
 
     def capture(self):
@@ -160,17 +165,19 @@ class GaussianModel:
         self.percent_dense = training_args.percent_dense
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
-
+        # 将模型的参数转化为tensor
         l = [
             {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},
             {'params': [self._features_dc], 'lr': training_args.feature_lr, "name": "f_dc"},
             {'params': [self._features_rest], 'lr': training_args.feature_lr / 20.0, "name": "f_rest"},
             {'params': [self._opacity], 'lr': training_args.opacity_lr, "name": "opacity"},
             {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
-            {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"}
+            {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"},
         ]
-
+        l_mlp = []
+        l_mlp.append({'params': self.sh_mlp.parameters(), 'lr': training_args.mlp_lr, "name": "mlp"}) # change
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
+        self.optimizer_mlp = torch.optim.Adam(l_mlp, lr=0.0, eps=1e-15) # change
         self.xyz_scheduler_args = get_expon_lr_func(lr_init=training_args.position_lr_init*self.spatial_lr_scale,
                                                     lr_final=training_args.position_lr_final*self.spatial_lr_scale,
                                                     lr_delay_mult=training_args.position_lr_delay_mult,
@@ -419,3 +426,35 @@ class GaussianModel:
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter,:2], dim=-1, keepdim=True)
         self.denom[update_filter] += 1
+        
+    def precompute_colors(self, cam_rotation, cam_translation, light_rotation):
+        # 将模型的参数从ndarray转化为tensor
+        cam_rotation = torch.tensor(cam_rotation, dtype=torch.float)
+        cam_translation = torch.tensor(cam_translation, dtype=torch.float)
+        light_rotation = torch.tensor(light_rotation, dtype=torch.float)
+        
+        # [3,3] -> [9]
+        cam_rotation = cam_rotation.flatten()
+        light_rotation = light_rotation.flatten()
+        
+        # copy xyz
+        xyz = self.get_xyz.clone().detach()
+        
+        N = xyz.shape[0]
+
+        # 将所有张量移动到cuda上
+        if torch.cuda.is_available():
+            xyz = xyz.to("cuda")
+            cam_rotation = cam_rotation.to("cuda")
+            cam_translation = cam_translation.to("cuda")
+            light_rotation = light_rotation.to("cuda")
+        
+        inputs = torch.cat([
+            xyz,  # (N, 3)
+            cam_rotation.repeat(N, 1),  # (N, 9)
+            cam_translation.repeat(N, 1),  # (N, 3)
+            light_rotation.repeat(N, 1)  # (N, 9)
+        ], dim=1)  # (N, input_size)
+        
+        colors = self.sh_mlp(inputs)
+        return colors

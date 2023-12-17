@@ -79,6 +79,7 @@ class OptimizationParams(ParamGroup):
         self.opacity_lr = 0.05
         self.scaling_lr = 0.005
         self.rotation_lr = 0.001
+        self.mlp_lr = 0.001 # change
         self.percent_dense = 0.01
         self.lambda_dssim = 0.2
         self.densification_interval = 100

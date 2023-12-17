@@ -1,4 +1,5 @@
 *.pyc
+log.txt
 .vscode
 output
 build

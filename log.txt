@@ -1,1 +1,0 @@
-Viewpoint stack size: 43

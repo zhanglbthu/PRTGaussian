@@ -76,14 +76,22 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
         viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
-        
+        # with open('log.txt', 'a') as f:
+        #     # 打印相机序号和图片名
+        #     # ? id和图片id对不上
+        #     f.write(str(viewpoint_cam.uid) + ' ' + str(viewpoint_cam.image_name) + '\n')
         # Render
         if (iteration - 1) == debug_from:
             pipe.debug = True
 
         bg = torch.rand((3), device="cuda") if opt.random_background else background
 
-        render_pkg = render(viewpoint_cam, gaussians, pipe, bg)
+        colors = gaussians.precompute_colors(viewpoint_cam.R, viewpoint_cam.T, viewpoint_cam.R_light)
+        with open ('log.txt', 'a') as f:
+            # 打印颜色
+            f.write(str(colors) + '\n')
+        
+        render_pkg = render(viewpoint_cam, gaussians, pipe, bg, override_color=colors)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
         # Loss
@@ -126,6 +134,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if iteration < opt.iterations:
                 gaussians.optimizer.step()
                 gaussians.optimizer.zero_grad(set_to_none = True)
+                
+                gaussians.optimizer_mlp.step()
+                gaussians.optimizer_mlp.zero_grad(set_to_none = True)
 
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))

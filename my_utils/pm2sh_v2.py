@@ -82,11 +82,20 @@ def pm2sh(pm, order=3):
 
 
 if __name__ == "__main__":
-    pm_path = "grace.jpg"
+    # pm_path = "grace.jpg"
+    pm_path = "env_map.png"
     pm = transforms.ToTensor()(Image.open(pm_path)).unsqueeze(0)  # [1,3,h,w]
-    _, pm_sh_3 = pm2sh(pm, order=3)
-    _, pm_sh_9 = pm2sh(pm, order=9)
-    _, pm_sh_12 = pm2sh(pm, order=12)
-    save_image(pm_sh_3, "res/sh-3.jpg")
-    save_image(pm_sh_9, "res/sh-9.jpg")
-    save_image(pm_sh_12, "res/sh-12.jpg")
+    
+    # _, pm_sh_3 = pm2sh(pm, order=3)
+    # _, pm_sh_9 = pm2sh(pm, order=9)
+    # _, pm_sh_12 = pm2sh(pm, order=12)
+    # # save_image(pm_sh_3, "res/sh-3.jpg")
+    # # save_image(pm_sh_9, "res/sh-9.jpg")
+    # # save_image(pm_sh_12, "res/sh-12.jpg")
+    # save_image(pm_sh_3, "test/sh-3.jpg")
+    # save_image(pm_sh_9, "test/sh-9.jpg")
+    # save_image(pm_sh_12, "test/sh-12.jpg")
+    coffes, pm_sh = pm2sh(pm, order=9)
+    save_image(pm_sh, "test/sh-9.jpg")
+    print(coffes.shape)
+    print(coffes)
