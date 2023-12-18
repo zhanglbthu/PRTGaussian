@@ -33,9 +33,15 @@ except ImportError:
 from torchvision.utils import save_image
 from my_utils.envmap import create_env_map
 from my_utils.pm2sh_v2 import pm2sh
+torch.set_printoptions(threshold=5000)
 DEBUG_PATH = "debug/envmap"
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
+    # clear log.txt
+    with open('log.txt', 'w') as f:
+        f.write('')
+        f.close()
+    
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
@@ -56,20 +62,20 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
     for iteration in range(first_iter, opt.iterations + 1):        
-        if network_gui.conn == None:
-            network_gui.try_connect()
-        while network_gui.conn != None:
-            try:
-                net_image_bytes = None
-                custom_cam, do_training, pipe.convert_SHs_python, pipe.compute_cov3D_python, keep_alive, scaling_modifer = network_gui.receive()
-                if custom_cam != None:
-                    net_image = render(custom_cam, gaussians, pipe, background, scaling_modifer)["render"]
-                    net_image_bytes = memoryview((torch.clamp(net_image, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy())
-                network_gui.send(net_image_bytes, dataset.source_path)
-                if do_training and ((iteration < int(opt.iterations)) or not keep_alive):
-                    break
-            except Exception as e:
-                network_gui.conn = None
+        # if network_gui.conn == None:
+        #     network_gui.try_connect()
+        # while network_gui.conn != None:
+        #     try:
+        #         net_image_bytes = None
+        #         custom_cam, do_training, pipe.convert_SHs_python, pipe.compute_cov3D_python, keep_alive, scaling_modifer = network_gui.receive()
+        #         if custom_cam != None:
+        #             net_image = render(custom_cam, gaussians, pipe, background, scaling_modifer)["render"]
+        #             net_image_bytes = memoryview((torch.clamp(net_image, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy())
+        #         network_gui.send(net_image_bytes, dataset.source_path)
+        #         if do_training and ((iteration < int(opt.iterations)) or not keep_alive):
+        #             break
+        #     except Exception as e:
+        #         network_gui.conn = None
 
         iter_start.record()
 
@@ -91,13 +97,24 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         bg = torch.rand((3), device="cuda") if opt.random_background else background
         
         envmap = create_env_map(theta=viewpoint_cam.light_theta, phi=viewpoint_cam.light_phi)
-        # # save image
-        # save_image(envmap, os.path.join(DEBUG_PATH, "envmap" + str(iteration) + ".jpg"))
+        # save image
+        if iteration % 100 == 0:
+            save_image(envmap, os.path.join(DEBUG_PATH, "envmap" + str(iteration) + ".jpg"))
         light_coeffs, _ = pm2sh(envmap, order=9)
         if iteration == 1:
+            debug = True
             print("light_coeffs: ", light_coeffs.shape)
+        else:
+            debug = False
         
-        render_pkg = render(viewpoint_cam, gaussians, pipe, bg, override_color=None)
+        diffuse_colors = gaussians.precompute_diffuse_color(light_coeffs, debug)
+        
+        if iteration % 100 == 0:
+            with open('log.txt', 'a') as f:
+                f.write('iter: {}, diffuse_colors: {}\n'.format(iteration, diffuse_colors))
+                f.close()
+        
+        render_pkg = render(viewpoint_cam, gaussians, pipe, bg, override_color=diffuse_colors)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
         # Loss
@@ -140,6 +157,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if iteration < opt.iterations:
                 gaussians.optimizer.step()
                 gaussians.optimizer.zero_grad(set_to_none = True)
+                
+                gaussians.optimizer_decoder.step()
+                gaussians.optimizer_decoder.zero_grad(set_to_none = True)
 
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
@@ -214,8 +234,8 @@ if __name__ == "__main__":
     parser.add_argument('--port', type=int, default=6009)
     parser.add_argument('--debug_from', type=int, default=-1)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
-    parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 30_000])
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 30_000])
+    parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000])
+    parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000])
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default = None)
@@ -228,7 +248,7 @@ if __name__ == "__main__":
     safe_state(args.quiet)
 
     # Start GUI server, configure and run training
-    network_gui.init(args.ip, args.port)
+    # network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
     training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
 

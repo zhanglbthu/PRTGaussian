@@ -193,6 +193,7 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
 
             # NeRF 'transform_matrix' is a camera-to-world transform
             c2w = np.array(frame["transform_matrix"])
+            cam_direction = c2w[:3, 3]
             # change from OpenGL/Blender camera axes (Y up, Z back) to COLMAP (Y down, Z forward)
             c2w[:3, 1:3] *= -1
 
@@ -201,20 +202,18 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
             R = np.transpose(w2c[:3,:3])  # R is stored transposed due to 'glm' in CUDA code
             T = w2c[:3, 3]
             
-            # 计算俯仰角和方位角
-            cam_phi = np.arctan2(R[1, 0], R[0, 0])
-            cam_theta = np.arctan2(-R[2, 0], np.sqrt(R[2, 1]**2 + R[2, 2]**2))
+            # * 计算俯仰角和方位角
+            cam_phi, cam_theta = compute_angle(cam_direction)
             
             c2w_light = np.array(frame["transform_matrix_sun"])
+            light_direction = c2w_light[:3, 3]
             # change from OpenGL/Blender camera axes (Y up, Z back) to COLMAP (Y down, Z forward)
             c2w_light[:3, 1:3] *= -1
             # get the world-to-camera transform and set R, T
             w2c_light = np.linalg.inv(c2w_light)
             R_light = np.transpose(w2c_light[:3,:3])  # R is stored transposed due to 'glm' in CUDA code
-            T_light = w2c_light[:3, 3]
             
-            light_phi = np.arctan2(R_light[1, 0], R_light[0, 0])
-            light_theta = np.arctan2(-R_light[2, 0], np.sqrt(R_light[2, 1]**2 + R_light[2, 2]**2))
+            light_phi, light_theta = compute_angle(light_direction)
             
             image_path = os.path.join(path, cam_name)
             image_name = Path(cam_name).stem
@@ -237,6 +236,18 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
                             image_path=image_path, image_name=image_name, width=image.size[0], height=image.size[1]))
             
     return cam_infos
+
+def compute_angle(direction):
+    # * T: translation
+    # * theta: elevation angle
+    # * phi: azimuth angle
+    direction_normlized = direction / np.linalg.norm(direction) # (3,)
+    
+    phi = np.arctan2(direction_normlized[1], direction_normlized[0])
+    theta = np.arccos(direction_normlized[2])
+    
+    return phi, theta
+    
 
 def readNerfSyntheticInfo(path, white_background, eval, extension=".png", llffhold=8):
     print("Reading Training Transforms")

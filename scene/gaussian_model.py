@@ -65,6 +65,7 @@ class GaussianModel:
         self.decoder = decoder
         if torch.cuda.is_available():
             self.sh_mlp.cuda()
+            self.decoder.cuda()
         self.setup_functions()
 
     def capture(self):
@@ -462,4 +463,24 @@ class GaussianModel:
         
         colors = self.sh_mlp(inputs)
         return colors
+    
+    def precompute_diffuse_color(self, light_coeffs, debug=False):
+        # 将xyz(N,3)作为decoder的输入
+        xyz = self.get_xyz.clone().detach()
+        N = xyz.shape[0]
+        if torch.cuda.is_available():
+            xyz = xyz.to("cuda") # (N, 3)
+            light_coeffs = light_coeffs.to("cuda") # (1, 3, 81)
+        trans_coeffs = self.decoder(xyz)
+        if debug:
+            print("trans_coeffs shape: ", trans_coeffs.shape)
         
+        # 计算diffuse colors: (N, 3)
+        # convert trans_coeffs from (N, 243) to (N, 3, 81)
+        trans_coeffs = trans_coeffs.view(N, 3, 81)
+        
+        diffuse_colors = (trans_coeffs * light_coeffs).sum(dim=2)
+        if debug:
+            print("diffuse_colors shape: ", diffuse_colors.shape)
+        
+        return diffuse_colors
