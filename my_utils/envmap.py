@@ -22,7 +22,7 @@ def direction_to_uv(direction):
     v = 0.5 - (math.asin(y) / math.pi)
     return u, v
 
-def create_env_map(theta, phi, direction, size=(256, 128)):
+def create_env_map(theta=None, phi=None, direction=None, size=(256, 128)):
     """
     Create an environment map with a single pixel lit according to the direction light.
     direction: A 3D direction vector for the light.

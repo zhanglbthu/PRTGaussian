@@ -27,8 +27,6 @@ class CameraInfo(NamedTuple):
     uid: int
     R: np.array
     T: np.array
-    R_light: np.array
-    T_light: np.array
     cam_theta: float
     cam_phi: float
     light_theta: float
@@ -234,7 +232,7 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
             FovY = fovy 
             FovX = fovx
 
-            cam_infos.append(CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image, R_light=R_light, T_light=T_light,
+            cam_infos.append(CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
                             cam_phi=cam_phi, cam_theta=cam_theta, light_phi=light_phi, light_theta=light_theta,
                             image_path=image_path, image_name=image_name, width=image.size[0], height=image.size[1]))
             

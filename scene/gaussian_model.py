@@ -22,6 +22,9 @@ from utils.graphics_utils import BasicPointCloud
 from utils.general_utils import strip_symmetric, build_scaling_rotation
 
 from model.mlp import SHNetwork
+from model.hash import decoder
+import commentjson as json
+import tinycudann as tcnn
 
 class GaussianModel:
 
@@ -59,6 +62,7 @@ class GaussianModel:
         self.percent_dense = 0
         self.spatial_lr_scale = 0
         self.sh_mlp = SHNetwork()
+        self.decoder = decoder
         if torch.cuda.is_available():
             self.sh_mlp.cuda()
         self.setup_functions()
@@ -174,10 +178,10 @@ class GaussianModel:
             {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
             {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"},
         ]
-        l_mlp = []
-        l_mlp.append({'params': self.sh_mlp.parameters(), 'lr': training_args.mlp_lr, "name": "mlp"}) # change
+
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
-        self.optimizer_mlp = torch.optim.Adam(l_mlp, lr=0.0, eps=1e-15) # change
+        self.optimizer_decoder = torch.optim.Adam(self.decoder.parameters(), lr=0.01)
+        
         self.xyz_scheduler_args = get_expon_lr_func(lr_init=training_args.position_lr_init*self.spatial_lr_scale,
                                                     lr_final=training_args.position_lr_final*self.spatial_lr_scale,
                                                     lr_delay_mult=training_args.position_lr_delay_mult,
@@ -458,3 +462,4 @@ class GaussianModel:
         
         colors = self.sh_mlp(inputs)
         return colors
+        

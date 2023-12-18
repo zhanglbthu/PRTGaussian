@@ -3,7 +3,7 @@ IMAGE_FOLDER="/root/autodl-tmp/blender_code/shadow_neus/blend_files/point_light/
 ROOT_FOLDER="/root/autodl-tmp/gaussian-splatting/blender/para_test/hotdog_specular_point"
 DATA_FOLDER="$ROOT_FOLDER"
 INPUT_FOLDER="$ROOT_FOLDER/data/images"
-OUTPUT_FOLDER="$ROOT_FOLDER/test/test_1217evening"
+OUTPUT_FOLDER="$ROOT_FOLDER/test/test_1218lingchen02"
 
 TMP_FOLDER="/root/autodl-tmp/code"
 
