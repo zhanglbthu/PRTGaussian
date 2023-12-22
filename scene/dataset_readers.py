@@ -189,11 +189,16 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
 
         frames = contents["frames"]
         for idx, frame in enumerate(frames):
+            # 打印读取进度
+            sys.stdout.write('\r')
+            # the exact output you're looking for:
+            sys.stdout.write("Reading camera {}/{}".format(idx+1, len(frames)))
+            sys.stdout.flush()
+            
             cam_name = os.path.join(path, frame["file_path"] + extension)
 
             # NeRF 'transform_matrix' is a camera-to-world transform
             c2w = np.array(frame["transform_matrix"])
-            cam_direction = c2w[:3, 3]
             # change from OpenGL/Blender camera axes (Y up, Z back) to COLMAP (Y down, Z forward)
             c2w[:3, 1:3] *= -1
 
@@ -202,17 +207,17 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
             R = np.transpose(w2c[:3,:3])  # R is stored transposed due to 'glm' in CUDA code
             T = w2c[:3, 3]
             
+            cam_direction = T
             # * 计算俯仰角和方位角
             cam_phi, cam_theta = compute_angle(cam_direction)
             
             c2w_light = np.array(frame["transform_matrix_sun"])
-            light_direction = c2w_light[:3, 3]
             # change from OpenGL/Blender camera axes (Y up, Z back) to COLMAP (Y down, Z forward)
             c2w_light[:3, 1:3] *= -1
             # get the world-to-camera transform and set R, T
             w2c_light = np.linalg.inv(c2w_light)
-            R_light = np.transpose(w2c_light[:3,:3])  # R is stored transposed due to 'glm' in CUDA code
-            
+            # R_light = np.transpose(w2c_light[:3,:3])  # R is stored transposed due to 'glm' in CUDA code
+            light_direction = w2c_light[:3, 3]
             light_phi, light_theta = compute_angle(light_direction)
             
             image_path = os.path.join(path, cam_name)

@@ -33,8 +33,9 @@ except ImportError:
 from torchvision.utils import save_image
 from my_utils.envmap import create_env_map
 from my_utils.pm2sh_v2 import pm2sh
+import open3d as o3d
 torch.set_printoptions(threshold=5000)
-DEBUG_PATH = "debug/envmap"
+DEBUG_PATH = "debug"
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
     # clear log.txt
@@ -62,20 +63,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
     for iteration in range(first_iter, opt.iterations + 1):        
-        # if network_gui.conn == None:
-        #     network_gui.try_connect()
-        # while network_gui.conn != None:
-        #     try:
-        #         net_image_bytes = None
-        #         custom_cam, do_training, pipe.convert_SHs_python, pipe.compute_cov3D_python, keep_alive, scaling_modifer = network_gui.receive()
-        #         if custom_cam != None:
-        #             net_image = render(custom_cam, gaussians, pipe, background, scaling_modifer)["render"]
-        #             net_image_bytes = memoryview((torch.clamp(net_image, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy())
-        #         network_gui.send(net_image_bytes, dataset.source_path)
-        #         if do_training and ((iteration < int(opt.iterations)) or not keep_alive):
-        #             break
-        #     except Exception as e:
-        #         network_gui.conn = None
 
         iter_start.record()
 
@@ -96,10 +83,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         bg = torch.rand((3), device="cuda") if opt.random_background else background
         
-        envmap = create_env_map(theta=viewpoint_cam.light_theta, phi=viewpoint_cam.light_phi)
-        # save image
-        if iteration % 100 == 0:
-            save_image(envmap, os.path.join(DEBUG_PATH, "envmap" + str(iteration) + ".jpg"))
+        envmap = create_env_map(theta=viewpoint_cam.light_theta, phi=viewpoint_cam.light_phi) 
+        # # save image
+        # if iteration % 1000 == 0:
+        #     save_image(envmap, os.path.join(DEBUG_PATH, "envmap", str(iteration) + ".jpg"))
         light_coeffs, _ = pm2sh(envmap, order=9)
         if iteration == 1:
             debug = True
@@ -109,18 +96,39 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         
         diffuse_colors = gaussians.precompute_diffuse_color(light_coeffs, debug)
         
-        if iteration % 100 == 0:
-            with open('log.txt', 'a') as f:
-                f.write('iter: {}, diffuse_colors: {}\n'.format(iteration, diffuse_colors))
-                f.close()
+        # if iteration % 100 == 0:
+        #     xyz = gaussians.get_xyz
+        #     colors = diffuse_colors.clone()
+        #     # convert to numpy
+        #     xyz = xyz.detach().cpu().numpy()
+        #     colors = colors.detach().cpu().numpy()
+        #     # 保存点云文件到debug/point_cloud
+        #     pcd = o3d.geometry.PointCloud()
+        #     pcd.points = o3d.utility.Vector3dVector(xyz)
+        #     pcd.colors = o3d.utility.Vector3dVector(colors)
+        #     path = os.path.join(DEBUG_PATH, "point_cloud", str(iteration) + ".ply")
+        #     o3d.io.write_point_cloud(path, pcd)
         
-        render_pkg = render(viewpoint_cam, gaussians, pipe, bg, override_color=diffuse_colors)
+        # if iteration % 100 == 0:
+        #     with open('log.txt', 'a') as f:
+        #         f.write('iter: {}, diffuse_colors: {}\n'.format(iteration, diffuse_colors))
+        #         f.close()
+        
+        # diffuse_color = torch.tensor([0.8, 0.1, 0.1], dtype=torch.float32, device="cuda")
+        # diffuse_colors = diffuse_color.repeat(gaussians.get_xyz.shape[0], 1)
+        
+        render_pkg = render(viewpoint_cam, gaussians, pipe, bg, override_color=diffuse_colors) # [0, 1]
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+
+        if iteration % 100 == 0:
+            # 保存图片
+            save_image(image, os.path.join(DEBUG_PATH, "image", str(iteration) + ".jpg"))
 
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
-        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+        # loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image)) #SRGB
+        loss = (1.0 - opt.lambda_dssim) * Ll1
         loss.backward()
 
         iter_end.record()
