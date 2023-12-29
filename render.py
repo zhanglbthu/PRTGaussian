@@ -10,7 +10,8 @@
 #
 
 import torch
-from scene import Scene
+import sys
+from scene import Scene, GaussianModel
 import os
 from tqdm import tqdm
 from os import makedirs
@@ -19,7 +20,8 @@ import torchvision
 from utils.general_utils import safe_state
 from argparse import ArgumentParser
 from arguments import ModelParams, PipelineParams, get_combined_args
-from gaussian_renderer import GaussianModel
+from my_utils.envmap import create_env_map
+from my_utils.pm2sh_v2 import pm2sh
 
 def render_set(model_path, name, iteration, views, gaussians, pipeline, background):
     render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
@@ -29,14 +31,21 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
     makedirs(gts_path, exist_ok=True)
 
     for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
-        rendering = render(view, gaussians, pipeline, background)["render"]
+        
+        envmap = create_env_map(theta=view.light_theta, phi=view.light_phi)
+        light_coeffs, _ = pm2sh(envmap, order=9)
+        
+        diffuse_colors = gaussians.precompute_diffuse_colors(light_coeffs)
+        
+        rendering = render(view, gaussians, pipeline, background, override_color=diffuse_colors)["render"]
         gt = view.original_image[0:3, :, :]
         torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
         torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
 
-def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool):
+def render_sets(dataset, iteration, pipeline, skip_train, skip_test):
     with torch.no_grad():
         gaussians = GaussianModel(dataset.sh_degree)
+ 
         scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)
 
         bg_color = [1,1,1] if dataset.white_background else [0, 0, 0]

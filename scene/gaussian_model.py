@@ -25,6 +25,11 @@ from model.mlp import SHNetwork
 from model.hash import decoder
 import commentjson as json
 import tinycudann as tcnn
+import torch.nn.functional as F
+
+def shifted_softplus(x):
+    x_prime = x - 5  # Shift x by 5 units
+    return F.softplus(x_prime)  # Apply the PyTorch softplus function
 
 class GaussianModel:
 
@@ -464,7 +469,7 @@ class GaussianModel:
         colors = self.sh_mlp(inputs)
         return colors
     
-    def precompute_diffuse_color(self, light_coeffs, debug=False):
+    def precompute_diffuse_colors(self, light_coeffs, debug=False):
         # 将xyz(N,3)作为decoder的输入
         xyz = self.get_xyz.clone().detach()
         N = xyz.shape[0]
@@ -472,6 +477,8 @@ class GaussianModel:
             xyz = xyz.to("cuda") # (N, 3)
             light_coeffs = light_coeffs.to("cuda") # (1, 3, 81)
         trans_coeffs = self.decoder(xyz)
+        # trans_coeffs = F.softmax(trans_coeffs)
+        
         if debug:
             print("trans_coeffs shape: ", trans_coeffs.shape)
         

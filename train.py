@@ -34,10 +34,13 @@ from torchvision.utils import save_image
 from my_utils.envmap import create_env_map
 from my_utils.pm2sh_v2 import pm2sh
 import open3d as o3d
-torch.set_printoptions(threshold=5000)
-DEBUG_PATH = "debug"
+from configparser import ConfigParser
+from os import makedirs
+import torchvision
+import json
 
-def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
+def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, 
+             resolution=(64, 32), debug_path=None, scale=5.0, debug=False):
     # clear log.txt
     with open('log.txt', 'w') as f:
         f.write('')
@@ -46,8 +49,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
+
     scene = Scene(dataset, gaussians)
     gaussians.training_setup(opt) # * Set up optimizer
+
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
         gaussians.restore(model_params, opt)
@@ -59,119 +64,107 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     iter_end = torch.cuda.Event(enable_timing = True)
 
     viewpoint_stack = None
-    ema_loss_for_log = 0.0
-    progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
-    first_iter += 1
-    for iteration in range(first_iter, opt.iterations + 1):        
+    if not debug:
+        ema_loss_for_log = 0.0
+        progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
+        first_iter += 1
+        for iteration in range(first_iter, opt.iterations + 1):        
 
-        iter_start.record()
+            iter_start.record()
 
-        gaussians.update_learning_rate(iteration) # * Update learning rate
+            gaussians.update_learning_rate(iteration) # * Update learning rate
 
-        # Every 1000 its we increase the levels of SH up to a maximum degree
-        if iteration % 1000 == 0:
-            gaussians.oneupSHdegree() # * Increase SH degree
+            # Every 1000 its we increase the levels of SH up to a maximum degree
+            if iteration % 1000 == 0:
+                gaussians.oneupSHdegree() # * Increase SH degree
 
-        # Pick a random Camera
-        if not viewpoint_stack:
-            viewpoint_stack = scene.getTrainCameras().copy()
-        viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
+            # Pick a random Camera
+            if not viewpoint_stack:
+                viewpoint_stack = scene.getTrainCameras().copy()
+            viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
 
-        # Render
-        if (iteration - 1) == debug_from:
-            pipe.debug = True
+            # Render
+            if (iteration - 1) == debug_from:
+                pipe.debug = True
 
-        bg = torch.rand((3), device="cuda") if opt.random_background else background
-        
-        envmap = create_env_map(theta=viewpoint_cam.light_theta, phi=viewpoint_cam.light_phi) 
-        # # save image
-        # if iteration % 1000 == 0:
-        #     save_image(envmap, os.path.join(DEBUG_PATH, "envmap", str(iteration) + ".jpg"))
-        light_coeffs, _ = pm2sh(envmap, order=9)
-        if iteration == 1:
-            debug = True
-            print("light_coeffs: ", light_coeffs.shape)
-        else:
-            debug = False
-        
-        diffuse_colors = gaussians.precompute_diffuse_color(light_coeffs, debug)
-        
-        # if iteration % 100 == 0:
-        #     xyz = gaussians.get_xyz
-        #     colors = diffuse_colors.clone()
-        #     # convert to numpy
-        #     xyz = xyz.detach().cpu().numpy()
-        #     colors = colors.detach().cpu().numpy()
-        #     # 保存点云文件到debug/point_cloud
-        #     pcd = o3d.geometry.PointCloud()
-        #     pcd.points = o3d.utility.Vector3dVector(xyz)
-        #     pcd.colors = o3d.utility.Vector3dVector(colors)
-        #     path = os.path.join(DEBUG_PATH, "point_cloud", str(iteration) + ".ply")
-        #     o3d.io.write_point_cloud(path, pcd)
-        
-        # if iteration % 100 == 0:
-        #     with open('log.txt', 'a') as f:
-        #         f.write('iter: {}, diffuse_colors: {}\n'.format(iteration, diffuse_colors))
-        #         f.close()
-        
-        # diffuse_color = torch.tensor([0.8, 0.1, 0.1], dtype=torch.float32, device="cuda")
-        # diffuse_colors = diffuse_color.repeat(gaussians.get_xyz.shape[0], 1)
-        
-        render_pkg = render(viewpoint_cam, gaussians, pipe, bg, override_color=diffuse_colors) # [0, 1]
-        image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+            bg = torch.rand((3), device="cuda") if opt.random_background else background
+            
+            envmap = create_env_map(theta=viewpoint_cam.light_theta, phi=viewpoint_cam.light_phi, size=resolution)
+            light_coeffs, sh_map = pm2sh(envmap, order=9, scale=scale)
+            
+            diffuse_colors = gaussians.precompute_diffuse_colors(light_coeffs)
+            
+            render_pkg = render(viewpoint_cam, gaussians, pipe, bg, override_color=diffuse_colors) # [0, 1]
+            image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+            
+            if iteration % 1000 == 0:
+                sh_map_path = os.path.join(debug_path, 'sh_map')
+                if not os.path.exists(sh_map_path):
+                    os.makedirs(sh_map_path)
+                render_path = os.path.join(debug_path, 'render')
+                if not os.path.exists(render_path):
+                    os.makedirs(render_path)
+                # save sh_map
+                save_image(sh_map, os.path.join(sh_map_path, '{0:05d}'.format(iteration) + ".png"))
+                # save render image
+                save_image(image, os.path.join(render_path, '{0:05d}'.format(iteration) + ".png"))
 
-        if iteration % 100 == 0:
-            # 保存图片
-            save_image(image, os.path.join(DEBUG_PATH, "image", str(iteration) + ".jpg"))
+            # Loss
+            gt_image = viewpoint_cam.original_image.cuda()
+            Ll1 = l1_loss(image, gt_image)
+            # loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image)) #SRGB
+            loss = (1.0 - opt.lambda_dssim) * Ll1
+            loss.backward()
 
-        # Loss
-        gt_image = viewpoint_cam.original_image.cuda()
-        Ll1 = l1_loss(image, gt_image)
-        # loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image)) #SRGB
-        loss = (1.0 - opt.lambda_dssim) * Ll1
-        loss.backward()
+            iter_end.record()
 
-        iter_end.record()
+            with torch.no_grad():
+                # Progress bar
+                ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
+                if iteration % 10 == 0:
+                    progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}"})
+                    progress_bar.update(10)
+                if iteration == opt.iterations:
+                    progress_bar.close()
 
-        with torch.no_grad():
-            # Progress bar
-            ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
-            if iteration % 10 == 0:
-                progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}"})
-                progress_bar.update(10)
-            if iteration == opt.iterations:
-                progress_bar.close()
+                # Log and save
+                training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
+                if (iteration in saving_iterations):
+                    print("\n[ITER {}] Saving Gaussians".format(iteration))
+                    scene.save(iteration)
 
-            # Log and save
-            training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
-            if (iteration in saving_iterations):
-                print("\n[ITER {}] Saving Gaussians".format(iteration))
-                scene.save(iteration)
+                # Densification
+                if iteration < opt.densify_until_iter:
+                    # Keep track of max radii in image-space for pruning
+                    gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
+                    gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
 
-            # Densification
-            if iteration < opt.densify_until_iter:
-                # Keep track of max radii in image-space for pruning
-                gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
-                gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
+                    if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
+                        size_threshold = 20 if iteration > opt.opacity_reset_interval else None
+                        gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
+                    
+                    if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
+                        gaussians.reset_opacity()
 
-                if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
-                    size_threshold = 20 if iteration > opt.opacity_reset_interval else None
-                    gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
-                
-                if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
-                    gaussians.reset_opacity()
+                # Optimizer step
+                if iteration < opt.iterations:
+                    gaussians.optimizer.step()
+                    gaussians.optimizer.zero_grad(set_to_none = True)
+                    
+                    gaussians.optimizer_decoder.step()
+                    gaussians.optimizer_decoder.zero_grad(set_to_none = True)
 
-            # Optimizer step
-            if iteration < opt.iterations:
-                gaussians.optimizer.step()
-                gaussians.optimizer.zero_grad(set_to_none = True)
-                
-                gaussians.optimizer_decoder.step()
-                gaussians.optimizer_decoder.zero_grad(set_to_none = True)
+                if (iteration in checkpoint_iterations):
+                    print("\n[ITER {}] Saving Checkpoint".format(iteration))
+                    torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
 
-            if (iteration in checkpoint_iterations):
-                print("\n[ITER {}] Saving Checkpoint".format(iteration))
-                torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
+    if not debug:
+        new_scene = Scene(dataset, gaussians, load_iteration=opt.iterations, shuffle=False)
+    else:
+        new_scene = Scene(dataset, gaussians, shuffle=False)
+        print("Rendering debug images")
+    render_set(dataset.model_path, "train", opt.iterations, new_scene.getTrainCameras(), gaussians, pipe, background, resolution=resolution, scale=scale, debug_path=debug_path)
+    render_set(dataset.model_path, "test", opt.iterations, new_scene.getTestCameras(), gaussians, pipe, background, resolution=resolution, scale=scale, debug_path=debug_path)
 
 def prepare_output_and_logger(args):    
     if not args.model_path:
@@ -232,6 +225,38 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
             tb_writer.add_scalar('total_points', scene.gaussians.get_xyz.shape[0], iteration)
         torch.cuda.empty_cache()
 
+def render_set(model_path, name, iteration, views, gaussians : GaussianModel, pipeline, background, resolution=(64, 32), scale=5.0, debug_path=None):
+    render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
+    gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
+
+    makedirs(render_path, exist_ok=True)
+    makedirs(gts_path, exist_ok=True)
+    
+    if debug_path:
+        sh_map_path = os.path.join(debug_path, 'sh_map_ordered')
+        if not os.path.exists(sh_map_path):
+            os.makedirs(sh_map_path)
+        
+        env_map_path = os.path.join(debug_path, 'env_map_ordered')
+        if not os.path.exists(env_map_path):
+            os.makedirs(env_map_path)
+
+    for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
+        
+        envmap = create_env_map(theta=view.light_theta, phi=view.light_phi, size=resolution)
+        light_coeffs, sh_map = pm2sh(envmap, order=9, scale=scale)
+        
+        if debug:
+            save_image(sh_map, os.path.join(sh_map_path, '{0:05d}'.format(idx) + ".png"))
+            save_image(envmap, os.path.join(env_map_path, '{0:05d}'.format(idx) + ".png"))
+        
+        diffuse_colors = gaussians.precompute_diffuse_colors(light_coeffs)
+        
+        rendering = render(view, gaussians, pipeline, background, override_color=diffuse_colors)["render"]
+        gt = view.original_image[0:3, :, :]
+        torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
+        torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
+
 if __name__ == "__main__":
     # Set up command line argument parser
     parser = ArgumentParser(description="Training script parameters")
@@ -242,13 +267,49 @@ if __name__ == "__main__":
     parser.add_argument('--port', type=int, default=6009)
     parser.add_argument('--debug_from', type=int, default=-1)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
-    parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000])
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000])
+    parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 30_000])
+    parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 30_000])
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default = None)
+    parser.add_argument("--config", type=str, required=True, default=None) # change
+    
     args = parser.parse_args(sys.argv[1:])
+    
+    config = ConfigParser()
+    config.read(args.config)
+    
+    root_path = config['PATH']['root_path']
+    obj_name = config['NAME']['obj_name']
+    out_name = config['NAME']['out_name']
+    
     args.save_iterations.append(args.iterations)
+    
+    source_path = os.path.join(root_path, obj_name)
+    out_path = os.path.join(source_path, 'out', out_name)
+    
+    if not os.path.exists(out_path):
+        os.makedirs(out_path)
+    
+    # 查看out_path下有多少个文件夹，model_path为out_path下的第几个文件夹，从0开始，比如"out_path/version_0"
+    model_path = os.path.join(out_path, 'version_{}'.format(len(os.listdir(out_path))))
+    if not os.path.exists(model_path):
+        os.makedirs(model_path)
+    
+    # 在model_path下保存config文件
+    with open(os.path.join(model_path, 'config.ini'), 'w') as configfile:
+        config.write(configfile)
+        
+    args.source_path = source_path
+    args.model_path = model_path
+    
+    hash_path = 'config/config_hash.json'
+    with open(hash_path) as f:
+        hash_config = json.load(f)
+    
+    # 在model_path下保存config_hash文件
+    with open(os.path.join(model_path, 'config_hash.json'), 'w') as f:
+        json.dump(hash_config, f)
     
     print("Optimizing " + args.model_path)
 
@@ -258,7 +319,17 @@ if __name__ == "__main__":
     # Start GUI server, configure and run training
     # network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
+    
+    resolution_str = config['SH']['resolution'] # 48, 24
+    scale = float(config['SH']['scale']) # 10.0
+    # convert resolution_str to tuple
+    resolution = tuple(map(int, resolution_str.split(',')))
+    debug_path = os.path.join(model_path, 'debug')
+    
+    debug = config.getboolean('BOOL', 'debug')
+    print("debug: {}".format(debug))
+    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, 
+             resolution, debug_path, scale, debug)
 
     # All done
     print("\nTraining complete.")

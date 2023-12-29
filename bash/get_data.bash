@@ -1,10 +1,10 @@
 #!/bin/bash
 blender_path="/root/blender-3.6.5-linux-x64/blender"
-objs=(chair_specular_point drums_specular_point ficus_specular_point hotdog_specular_point lego_specular_point materials_specular_point mic_specular_point ship_specular_point)
+objs=(hotdog_specular_point)
 gpus=(0 1 2 3 4 5 6 7)
 source_path="/root/autodl-tmp/blender_code/shadow_neus/blend_files"
 
-root_path="/root/autodl-tmp/gaussian-splatting/blender/test"
+root_path="/root/autodl-tmp/gaussian-splatting/blender/25_25_translation_debug"
 
 
 cur_idx=0

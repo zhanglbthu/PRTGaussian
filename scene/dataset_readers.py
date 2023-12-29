@@ -23,6 +23,9 @@ from plyfile import PlyData, PlyElement
 from utils.sh_utils import SH2RGB
 from scene.gaussian_model import BasicPointCloud
 
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+
 class CameraInfo(NamedTuple):
     uid: int
     R: np.array
@@ -182,7 +185,7 @@ def readColmapSceneInfo(path, images, eval, llffhold=8):
 
 def readCamerasFromTransforms(path, transformsfile, white_background, extension=".png"):
     cam_infos = []
-
+    translations = []
     with open(os.path.join(path, transformsfile)) as json_file:
         contents = json.load(json_file)
         fovx = contents["camera_angle_x"]
@@ -207,7 +210,8 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
             R = np.transpose(w2c[:3,:3])  # R is stored transposed due to 'glm' in CUDA code
             T = w2c[:3, 3]
             
-            cam_direction = T
+            cam_direction = c2w[:3, 3]
+            
             # * 计算俯仰角和方位角
             cam_phi, cam_theta = compute_angle(cam_direction)
             
@@ -215,9 +219,10 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
             # change from OpenGL/Blender camera axes (Y up, Z back) to COLMAP (Y down, Z forward)
             c2w_light[:3, 1:3] *= -1
             # get the world-to-camera transform and set R, T
-            w2c_light = np.linalg.inv(c2w_light)
+            # w2c_light = np.linalg.inv(c2w_light)
             # R_light = np.transpose(w2c_light[:3,:3])  # R is stored transposed due to 'glm' in CUDA code
-            light_direction = w2c_light[:3, 3]
+            light_direction = c2w_light[:3, 3]
+            translations.append(light_direction)
             light_phi, light_theta = compute_angle(light_direction)
             
             image_path = os.path.join(path, cam_name)
@@ -240,7 +245,7 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
                             cam_phi=cam_phi, cam_theta=cam_theta, light_phi=light_phi, light_theta=light_theta,
                             image_path=image_path, image_name=image_name, width=image.size[0], height=image.size[1]))
             
-    return cam_infos
+    return cam_infos, translations
 
 def compute_angle(direction):
     # * T: translation
@@ -256,7 +261,25 @@ def compute_angle(direction):
 
 def readNerfSyntheticInfo(path, white_background, eval, extension=".png", llffhold=8):
     print("Reading Training Transforms")
-    cam_infos = readCamerasFromTransforms(path, "transforms_train.json", white_background, extension)
+    cam_infos, translations = readCamerasFromTransforms(path, "transforms_train.json", white_background, extension)
+    
+    # visualize the translations
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+    # 为每个点添加到图中，并连接它们
+    xs = [x for x, y, z in translations]
+    ys = [y for x, y, z in translations]
+    zs = [z for x, y, z in translations]
+    ax.scatter(xs, ys, zs, c='r', marker='o')  # 添加点
+    ax.plot(xs, ys, zs, color='b')  # 连接点
+
+    # 设置轴标签
+    ax.set_xlabel('X Label')
+    ax.set_ylabel('Y Label')
+    ax.set_zlabel('Z Label')
+    
+    # save the figure
+    plt.savefig(os.path.join(path, "translations_light.png"))
     
     if eval:
         train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 0]

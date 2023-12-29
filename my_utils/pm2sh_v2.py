@@ -46,7 +46,7 @@ def SH(l, m, theta, phi):
                 torch.sin(-m * phi) * associated_legendre_polynomial(l, -m, torch.cos(theta))
 
 
-def pm2sh(pm, order=3):
+def pm2sh(pm, order=3, scale=10.0):
     '''
     input: pm [b,3,h,w], ensure w=2h
     output: 
@@ -62,6 +62,9 @@ def pm2sh(pm, order=3):
 
     dphi = 2 * math.pi / w
     dtheta = math.pi / h
+    
+    # change: scale the pm
+    pm = pm * scale
     
     # calculate integral
     pm = pm[..., None]  # [b,3,h,w,1]
@@ -85,7 +88,7 @@ if __name__ == "__main__":
     # pm_path = "grace.jpg"
     pm_path = "env_map.png"
     pm = transforms.ToTensor()(Image.open(pm_path)).unsqueeze(0)  # [1,3,h,w]
-    pm = pm * 10
+    # pm = pm
     coffes, pm_sh = pm2sh(pm, order=9)
     print(coffes)
     save_image(pm_sh, "test/sh-9.png")
