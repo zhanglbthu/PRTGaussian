@@ -477,7 +477,7 @@ class GaussianModel:
             xyz = xyz.to("cuda") # (N, 3)
             light_coeffs = light_coeffs.to("cuda") # (1, 3, 81)
         trans_coeffs = self.decoder(xyz)
-        # trans_coeffs = F.softmax(trans_coeffs)
+        # trans_coeffs = shifted_softplus(trans_coeffs)
         
         if debug:
             print("trans_coeffs shape: ", trans_coeffs.shape)
@@ -487,6 +487,7 @@ class GaussianModel:
         trans_coeffs = trans_coeffs.view(N, 3, 81)
         
         diffuse_colors = (trans_coeffs * light_coeffs).sum(dim=2)
+        
         if debug:
             print("diffuse_colors shape: ", diffuse_colors.shape)
         

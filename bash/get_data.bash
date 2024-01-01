@@ -4,7 +4,7 @@ objs=(hotdog_specular_point)
 gpus=(0 1 2 3 4 5 6 7)
 source_path="/root/autodl-tmp/blender_code/shadow_neus/blend_files"
 
-root_path="/root/autodl-tmp/gaussian-splatting/blender/25_25_translation_debug"
+root_path="/root/autodl-tmp/gaussian-splatting/blender/25_25_exr_1231"
 
 
 cur_idx=0

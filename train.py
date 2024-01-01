@@ -33,6 +33,7 @@ except ImportError:
 from torchvision.utils import save_image
 from my_utils.envmap import create_env_map
 from my_utils.pm2sh_v2 import pm2sh
+from my_utils.convert import srgb_to_linear
 import open3d as o3d
 from configparser import ConfigParser
 from os import makedirs
@@ -40,7 +41,7 @@ import torchvision
 import json
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, 
-             resolution=(64, 32), debug_path=None, scale=5.0, debug=False):
+             resolution=(64, 32), debug_path=None, scale=5.0, debug=False, extension=".png"):
     # clear log.txt
     with open('log.txt', 'w') as f:
         f.write('')
@@ -50,7 +51,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
 
-    scene = Scene(dataset, gaussians)
+    scene = Scene(dataset, gaussians, extension=extension)
     gaussians.training_setup(opt) # * Set up optimizer
 
     if checkpoint:
@@ -111,7 +112,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
             # Loss
             gt_image = viewpoint_cam.original_image.cuda()
-            Ll1 = l1_loss(image, gt_image)
+            
+            # Ll1 = l1_loss(image, gt_image) # change
+            Ll1 = l1_loss(image, srgb_to_linear(gt_image)) # change
             # loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image)) #SRGB
             loss = (1.0 - opt.lambda_dssim) * Ll1
             loss.backward()
@@ -325,11 +328,12 @@ if __name__ == "__main__":
     # convert resolution_str to tuple
     resolution = tuple(map(int, resolution_str.split(',')))
     debug_path = os.path.join(model_path, 'debug')
+    extension = config['SETTING']['extension']
     
     debug = config.getboolean('BOOL', 'debug')
     print("debug: {}".format(debug))
     training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, 
-             resolution, debug_path, scale, debug)
+             resolution, debug_path, scale, debug, extension)
 
     # All done
     print("\nTraining complete.")

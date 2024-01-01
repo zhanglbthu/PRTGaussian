@@ -186,6 +186,7 @@ def readColmapSceneInfo(path, images, eval, llffhold=8):
 def readCamerasFromTransforms(path, transformsfile, white_background, extension=".png"):
     cam_infos = []
     translations = []
+    light_angles = []
     with open(os.path.join(path, transformsfile)) as json_file:
         contents = json.load(json_file)
         fovx = contents["camera_angle_x"]
@@ -218,12 +219,12 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
             c2w_light = np.array(frame["transform_matrix_sun"])
             # change from OpenGL/Blender camera axes (Y up, Z back) to COLMAP (Y down, Z forward)
             c2w_light[:3, 1:3] *= -1
-            # get the world-to-camera transform and set R, T
-            # w2c_light = np.linalg.inv(c2w_light)
-            # R_light = np.transpose(w2c_light[:3,:3])  # R is stored transposed due to 'glm' in CUDA code
+            
             light_direction = c2w_light[:3, 3]
             translations.append(light_direction)
             light_phi, light_theta = compute_angle(light_direction)
+            
+            light_angles.append([light_phi, light_theta])
             
             image_path = os.path.join(path, cam_name)
             image_name = Path(cam_name).stem
@@ -245,7 +246,7 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
                             cam_phi=cam_phi, cam_theta=cam_theta, light_phi=light_phi, light_theta=light_theta,
                             image_path=image_path, image_name=image_name, width=image.size[0], height=image.size[1]))
             
-    return cam_infos, translations
+    return cam_infos, light_angles
 
 def compute_angle(direction):
     # * T: translation
@@ -253,33 +254,31 @@ def compute_angle(direction):
     # * phi: azimuth angle
     direction_normlized = direction / np.linalg.norm(direction) # (3,)
     
-    phi = np.arctan2(direction_normlized[1], direction_normlized[0])
-    theta = np.arccos(direction_normlized[2])
+    phi = np.arctan2(direction_normlized[1], direction_normlized[0]) # (-pi, pi)
+    theta = np.arccos(direction_normlized[2]) # (0, pi)
     
     return phi, theta
     
 
 def readNerfSyntheticInfo(path, white_background, eval, extension=".png", llffhold=8):
     print("Reading Training Transforms")
-    cam_infos, translations = readCamerasFromTransforms(path, "transforms_train.json", white_background, extension)
+    cam_infos, light_angles = readCamerasFromTransforms(path, "transforms_train.json", white_background, extension)
     
-    # visualize the translations
+    radius = 1
+    points = []
+    for phi, theta in light_angles:
+        x = radius * np.sin(theta) * np.cos(phi)
+        y = radius * np.sin(theta) * np.sin(phi)
+        z = radius * np.cos(theta)
+        points.append([x, y, z])
+    
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')
-    # 为每个点添加到图中，并连接它们
-    xs = [x for x, y, z in translations]
-    ys = [y for x, y, z in translations]
-    zs = [z for x, y, z in translations]
-    ax.scatter(xs, ys, zs, c='r', marker='o')  # 添加点
-    ax.plot(xs, ys, zs, color='b')  # 连接点
-
-    # 设置轴标签
-    ax.set_xlabel('X Label')
-    ax.set_ylabel('Y Label')
-    ax.set_zlabel('Z Label')
-    
-    # save the figure
-    plt.savefig(os.path.join(path, "translations_light.png"))
+    points = np.array(points)
+    xs, ys, zs = zip(*points)
+    ax.scatter(xs, ys, zs)
+    # 保存图片
+    plt.savefig(os.path.join(path, "angles.png"))
     
     if eval:
         train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 0]
