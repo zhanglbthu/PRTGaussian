@@ -114,11 +114,15 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             gt_image = viewpoint_cam.original_image.cuda()
             
             # Ll1 = l1_loss(image, gt_image) # change
-            Ll1 = l1_loss(image, srgb_to_linear(gt_image)) # change
+            Ll1 = l1_loss(image, gt_image) # change
             # loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image)) #SRGB
             loss = (1.0 - opt.lambda_dssim) * Ll1
             loss.backward()
-
+            # 如果loss为inf或nan，停止训练
+            if torch.isinf(loss) or torch.isnan(loss):
+                print("loss is inf or nan, stop training")
+                print("iteration: {}".format(iteration))
+                break
             iter_end.record()
 
             with torch.no_grad():

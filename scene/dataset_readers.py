@@ -26,6 +26,9 @@ from scene.gaussian_model import BasicPointCloud
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
+import OpenEXR
+import Imath
+
 class CameraInfo(NamedTuple):
     uid: int
     R: np.array
@@ -39,6 +42,7 @@ class CameraInfo(NamedTuple):
     image: np.array
     image_path: str
     image_name: str
+    extension: str
     width: int
     height: int
 class SceneInfo(NamedTuple):
@@ -228,25 +232,63 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
             
             image_path = os.path.join(path, cam_name)
             image_name = Path(cam_name).stem
-            image = Image.open(image_path)
+            
+            if extension == ".png":
+                image = Image.open(image_path)
 
-            im_data = np.array(image.convert("RGBA"))
+                im_data = np.array(image.convert("RGBA"))
 
-            bg = np.array([1,1,1]) if white_background else np.array([0, 0, 0])
+                bg = np.array([1,1,1]) if white_background else np.array([0, 0, 0])
 
-            norm_data = im_data / 255.0
-            arr = norm_data[:,:,:3] * norm_data[:, :, 3:4] + bg * (1 - norm_data[:, :, 3:4])
-            image = Image.fromarray(np.array(arr*255.0, dtype=np.byte), "RGB")
+                norm_data = im_data / 255.0
+                arr = norm_data[:,:,:3] * norm_data[:, :, 3:4] + bg * (1 - norm_data[:, :, 3:4])
+                image = Image.fromarray(np.array(arr*255.0, dtype=np.byte), "RGB") # * (H, W, 3)
 
-            fovy = focal2fov(fov2focal(fovx, image.size[0]), image.size[1])
+                size = image.size
+            
+            elif extension == ".exr":
+                file = OpenEXR.InputFile(image_path)
+                
+                dw = file.header()['dataWindow']
+                size = (dw.max.x - dw.min.x + 1, dw.max.y - dw.min.y + 1)
+                
+                # 读取RGB颜色，不需要限制在0-1之间
+                pt = Imath.PixelType(Imath.PixelType.FLOAT)
+                (r, g, b) = [np.frombuffer(file.channel(Chan, pt), dtype=np.float32) for Chan in ("R", "G", "B")]
+                
+                r.shape = g.shape = b.shape = (size[1], size[0])
+                image = np.stack([r, g, b], axis=-1) # * (H, W, 3)
+
+                plot_histogram(image, path, idx)
+            
+            else:
+                assert False, "Unsupported image extension: {}".format(extension)
+            
+            fovy = focal2fov(fov2focal(fovx, size[0]), size[1])
             FovY = fovy 
             FovX = fovx
 
             cam_infos.append(CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
                             cam_phi=cam_phi, cam_theta=cam_theta, light_phi=light_phi, light_theta=light_theta,
-                            image_path=image_path, image_name=image_name, width=image.size[0], height=image.size[1]))
+                            image_path=image_path, image_name=image_name, extension=extension, width=size[0], height=size[1]))
             
     return cam_infos, light_angles
+
+def plot_histogram(im_data, path, idx):
+    # Flatten the image data for histogram
+    pixels = im_data.flatten()
+    # Plot histogram
+    plt.figure(figsize=(10, 6))
+    plt.hist(pixels, bins=50, log=True, color='blue', alpha=0.7)
+    plt.title('Pixel Value Distribution')
+    plt.xlabel('Pixel Intensity Values')
+    plt.ylabel('Frequency (Log Scale)')
+    plt.grid(True)
+    # save the plot
+    output_path = os.path.join(path, "histogram")
+    if not os.path.exists(output_path):
+        os.makedirs(output_path)
+    plt.savefig(os.path.join(output_path, f"{idx}.png"))
 
 def compute_angle(direction):
     # * T: translation
@@ -279,6 +321,7 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png", llffho
     ax.scatter(xs, ys, zs)
     # 保存图片
     plt.savefig(os.path.join(path, "angles.png"))
+    print("Saved angles.png")
     
     if eval:
         train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 0]

@@ -11,13 +11,14 @@
 
 from scene.cameras import Camera
 import numpy as np
+import torch
 from utils.general_utils import PILtoTorch
 from utils.graphics_utils import fov2focal
 
 WARNED = False
 
 def loadCam(args, id, cam_info, resolution_scale):
-    orig_w, orig_h = cam_info.image.size
+    orig_w, orig_h = cam_info.width, cam_info.height
 
     if args.resolution in [1, 2, 4, 8]:
         resolution = round(orig_w/(resolution_scale * args.resolution)), round(orig_h/(resolution_scale * args.resolution))
@@ -38,7 +39,12 @@ def loadCam(args, id, cam_info, resolution_scale):
         scale = float(global_down) * float(resolution_scale)
         resolution = (int(orig_w / scale), int(orig_h / scale))
 
-    resized_image_rgb = PILtoTorch(cam_info.image, resolution)
+    if cam_info.extension == ".png":
+        resized_image_rgb = PILtoTorch(cam_info.image, resolution)
+    elif cam_info.extension == ".exr":
+        resized_image_rgb = torch.from_numpy(cam_info.image).permute(2, 0, 1)
+    else:
+        assert False, "Unknown image extension: {}".format(cam_info.extension)
 
     gt_image = resized_image_rgb[:3, ...]
     loaded_mask = None
@@ -50,7 +56,7 @@ def loadCam(args, id, cam_info, resolution_scale):
                   cam_phi=cam_info.cam_phi, cam_theta=cam_info.cam_theta, light_phi=cam_info.light_phi, light_theta=cam_info.light_theta,
                   FoVx=cam_info.FovX, FoVy=cam_info.FovY, 
                   image=gt_image, gt_alpha_mask=loaded_mask,
-                  image_name=cam_info.image_name, uid=id, data_device=args.data_device)
+                  image_name=cam_info.image_name, uid=id, data_device=args.data_device, extension = cam_info.extension)
 
 def cameraList_from_camInfos(cam_infos, resolution_scale, args):
     camera_list = []
