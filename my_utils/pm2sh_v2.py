@@ -32,11 +32,10 @@ def associated_legendre_polynomial(l, m, x):
         pmmp1 = pll
     return pll
 
-
 def normlizeSH(l, m):
     return math.sqrt((2.0 * l + 1.0) * math.factorial(l - m) / (4 * math.pi * math.factorial(l + m)))
 
-
+# 球谐基
 def SH(l, m, theta, phi):
     if m == 0:
         return normlizeSH(l, m) * associated_legendre_polynomial(l, m, torch.cos(theta))

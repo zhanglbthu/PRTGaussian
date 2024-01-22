@@ -34,6 +34,7 @@ from torchvision.utils import save_image
 from my_utils.envmap import create_env_map
 from my_utils.pm2sh_v2 import pm2sh
 from my_utils.convert import srgb_to_linear
+from my_utils.sh.pm2sh_v2 import dir2sh, get_sh_coeffs, get_pm_from_sh
 import open3d as o3d
 from configparser import ConfigParser
 from os import makedirs
@@ -41,7 +42,7 @@ import torchvision
 import json
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, 
-             resolution=(64, 32), debug_path=None, scale=5.0, debug=False, extension=".png"):
+             debug_path=None, scale=5.0, debug=False, extension=".png"):
     # clear log.txt
     with open('log.txt', 'w') as f:
         f.write('')
@@ -49,10 +50,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
-    gaussians = GaussianModel(dataset.sh_degree)
+    gaussians = GaussianModel(dataset.sh_degree) # 初始化gaussians
 
-    scene = Scene(dataset, gaussians, extension=extension)
-    gaussians.training_setup(opt) # * Set up optimizer
+    scene = Scene(dataset, gaussians, extension=extension) # 初始化scene
+    gaussians.training_setup(opt) # 设置优化器
 
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
@@ -90,14 +91,19 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
             bg = torch.rand((3), device="cuda") if opt.random_background else background
             
-            envmap = create_env_map(theta=viewpoint_cam.light_theta, phi=viewpoint_cam.light_phi, size=resolution)
-            light_coeffs, sh_map = pm2sh(envmap, order=9, scale=scale)
+            # envmap = create_env_map(theta=viewpoint_cam.light_theta, phi=viewpoint_cam.light_phi, size=resolution)
+            # light_coeffs, sh_map = pm2sh(envmap, order=9, scale=scale)
+            light_coeffs = get_sh_coeffs(direction=(viewpoint_cam.light_phi, viewpoint_cam.light_theta), order=9, scale=scale)
             
             diffuse_colors = gaussians.precompute_diffuse_colors(light_coeffs)
             
             render_pkg = render(viewpoint_cam, gaussians, pipe, bg, override_color=diffuse_colors) # [0, 1]
             image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
-            
+            # 监测image是否全为0
+            if torch.sum(image) == 0:
+                print("image is all 0, stop training")
+                print("iteration: {}".format(iteration))
+                break
             if iteration % 1000 == 0:
                 sh_map_path = os.path.join(debug_path, 'sh_map')
                 if not os.path.exists(sh_map_path):
@@ -106,9 +112,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 if not os.path.exists(render_path):
                     os.makedirs(render_path)
                 # save sh_map
+                sh_map = get_pm_from_sh(light_coeffs, resolution=(32, 16), order=9)
                 save_image(sh_map, os.path.join(sh_map_path, '{0:05d}'.format(iteration) + ".png"))
                 # save render image
-                save_image(image, os.path.join(render_path, '{0:05d}'.format(iteration) + ".png"))
+                image_corrected = pow(image, 1.0/2.2)
+                save_image(image_corrected, os.path.join(render_path, '{0:05d}'.format(iteration) + ".png"))
 
             # Loss
             gt_image = viewpoint_cam.original_image.cuda()
@@ -166,12 +174,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
 
     if not debug:
-        new_scene = Scene(dataset, gaussians, load_iteration=opt.iterations, shuffle=False)
+        new_scene = Scene(dataset, gaussians, load_iteration=opt.iterations, shuffle=False, extension=extension)  
     else:
         new_scene = Scene(dataset, gaussians, shuffle=False)
         print("Rendering debug images")
-    render_set(dataset.model_path, "train", opt.iterations, new_scene.getTrainCameras(), gaussians, pipe, background, resolution=resolution, scale=scale, debug_path=debug_path)
-    render_set(dataset.model_path, "test", opt.iterations, new_scene.getTestCameras(), gaussians, pipe, background, resolution=resolution, scale=scale, debug_path=debug_path)
+    render_set(dataset.model_path, "train", opt.iterations, new_scene.getTrainCameras(), gaussians, pipe, background, scale=scale, debug_path=debug_path)
+    render_set(dataset.model_path, "test", opt.iterations, new_scene.getTestCameras(), gaussians, pipe, background, scale=scale, debug_path=debug_path)
 
 def prepare_output_and_logger(args):    
     if not args.model_path:
@@ -232,7 +240,7 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
             tb_writer.add_scalar('total_points', scene.gaussians.get_xyz.shape[0], iteration)
         torch.cuda.empty_cache()
 
-def render_set(model_path, name, iteration, views, gaussians : GaussianModel, pipeline, background, resolution=(64, 32), scale=5.0, debug_path=None):
+def render_set(model_path, name, iteration, views, gaussians : GaussianModel, pipeline, background, scale=1.0, debug_path=None):
     render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
     gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
 
@@ -243,24 +251,23 @@ def render_set(model_path, name, iteration, views, gaussians : GaussianModel, pi
         sh_map_path = os.path.join(debug_path, 'sh_map_ordered')
         if not os.path.exists(sh_map_path):
             os.makedirs(sh_map_path)
-        
-        env_map_path = os.path.join(debug_path, 'env_map_ordered')
-        if not os.path.exists(env_map_path):
-            os.makedirs(env_map_path)
 
     for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
         
-        envmap = create_env_map(theta=view.light_theta, phi=view.light_phi, size=resolution)
-        light_coeffs, sh_map = pm2sh(envmap, order=9, scale=scale)
+        light_coeffs, sh_map = dir2sh(direction=(view.light_phi, view.light_theta), order=9, scale=scale)
         
         if debug:
             save_image(sh_map, os.path.join(sh_map_path, '{0:05d}'.format(idx) + ".png"))
-            save_image(envmap, os.path.join(env_map_path, '{0:05d}'.format(idx) + ".png"))
         
         diffuse_colors = gaussians.precompute_diffuse_colors(light_coeffs)
         
         rendering = render(view, gaussians, pipeline, background, override_color=diffuse_colors)["render"]
         gt = view.original_image[0:3, :, :]
+        
+        # correct rendering
+        rendering = pow(rendering, 1.0/2.2)
+        gt = pow(gt, 1.0/2.2)
+        
         torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
         torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
 
@@ -327,17 +334,17 @@ if __name__ == "__main__":
     # network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
     
-    resolution_str = config['SH']['resolution'] # 48, 24
-    scale = float(config['SH']['scale']) # 10.0
+    # resolution_str = config['SH']['resolution'] # 48, 24
+    scale = float(config['SH']['scale']) # 1.0
     # convert resolution_str to tuple
-    resolution = tuple(map(int, resolution_str.split(',')))
+    # resolution = tuple(map(int, resolution_str.split(',')))
     debug_path = os.path.join(model_path, 'debug')
     extension = config['SETTING']['extension']
     
     debug = config.getboolean('BOOL', 'debug')
     print("debug: {}".format(debug))
     training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, 
-             resolution, debug_path, scale, debug, extension)
+             debug_path, scale, debug, extension)
 
     # All done
     print("\nTraining complete.")

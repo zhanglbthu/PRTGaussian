@@ -186,7 +186,7 @@ class GaussianModel:
         ]
 
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
-        self.optimizer_decoder = torch.optim.Adam(self.decoder.parameters(), lr=0.01)
+        self.optimizer_decoder = torch.optim.Adam(self.decoder.parameters(), lr=0.005)
         
         self.xyz_scheduler_args = get_expon_lr_func(lr_init=training_args.position_lr_init*self.spatial_lr_scale,
                                                     lr_final=training_args.position_lr_final*self.spatial_lr_scale,

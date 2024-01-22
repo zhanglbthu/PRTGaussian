@@ -62,6 +62,9 @@ def cameraList_from_camInfos(cam_infos, resolution_scale, args):
     camera_list = []
 
     for id, c in enumerate(cam_infos):
+        # 打印进度条
+        if id % 100 == 0:
+            print("Loading camera {} of {}".format(id, len(cam_infos)))
         camera_list.append(loadCam(args, id, c, resolution_scale))
 
     return camera_list
