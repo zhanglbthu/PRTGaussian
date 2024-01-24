@@ -186,7 +186,7 @@ class GaussianModel:
         ]
 
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
-        self.optimizer_decoder = torch.optim.Adam(self.decoder.parameters(), lr=0.005)
+        self.optimizer_decoder = torch.optim.Adam(self.decoder.parameters(), lr=0.001)
         
         self.xyz_scheduler_args = get_expon_lr_func(lr_init=training_args.position_lr_init*self.spatial_lr_scale,
                                                     lr_final=training_args.position_lr_final*self.spatial_lr_scale,
@@ -469,13 +469,14 @@ class GaussianModel:
         colors = self.sh_mlp(inputs)
         return colors
     
-    def precompute_diffuse_colors(self, light_coeffs, debug=False):
+    def precompute_diffuse_colors(self, light_coeffs, debug=False, iteration = 0):
         # 将xyz(N,3)作为decoder的输入
         xyz = self.get_xyz.clone().detach()
         N = xyz.shape[0]
         if torch.cuda.is_available():
             xyz = xyz.to("cuda") # (N, 3)
             light_coeffs = light_coeffs.to("cuda") # (1, 3, 81)
+        
         trans_coeffs = self.decoder(xyz)
         # trans_coeffs = shifted_softplus(trans_coeffs)
         

@@ -258,8 +258,6 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
                 
                 r.shape = g.shape = b.shape = (size[1], size[0])
                 image = np.stack([r, g, b], axis=-1) # * (H, W, 3)
-
-                plot_histogram(image, path, idx)
             
             else:
                 assert False, "Unsupported image extension: {}".format(extension)
@@ -273,22 +271,6 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
                             image_path=image_path, image_name=image_name, extension=extension, width=size[0], height=size[1]))
             
     return cam_infos, light_angles
-
-def plot_histogram(im_data, path, idx):
-    # Flatten the image data for histogram
-    pixels = im_data.flatten()
-    # Plot histogram
-    plt.figure(figsize=(10, 6))
-    plt.hist(pixels, bins=50, log=True, color='blue', alpha=0.7)
-    plt.title('Pixel Value Distribution')
-    plt.xlabel('Pixel Intensity Values')
-    plt.ylabel('Frequency (Log Scale)')
-    plt.grid(True)
-    # save the plot
-    output_path = os.path.join(path, "histogram")
-    if not os.path.exists(output_path):
-        os.makedirs(output_path)
-    plt.savefig(os.path.join(output_path, f"{idx}.png"))
 
 def compute_angle(direction):
     # * T: translation

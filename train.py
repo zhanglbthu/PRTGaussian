@@ -93,9 +93,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             
             # envmap = create_env_map(theta=viewpoint_cam.light_theta, phi=viewpoint_cam.light_phi, size=resolution)
             # light_coeffs, sh_map = pm2sh(envmap, order=9, scale=scale)
+            assert scale == 1.0
             light_coeffs = get_sh_coeffs(direction=(viewpoint_cam.light_phi, viewpoint_cam.light_theta), order=9, scale=scale)
             
-            diffuse_colors = gaussians.precompute_diffuse_colors(light_coeffs)
+            diffuse_colors = gaussians.precompute_diffuse_colors(light_coeffs, iteration=iteration)
             
             render_pkg = render(viewpoint_cam, gaussians, pipe, bg, override_color=diffuse_colors) # [0, 1]
             image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
