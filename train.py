@@ -102,9 +102,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
             # 监测image是否全为0
             if torch.sum(image) == 0:
-                print("image is all 0, stop training")
+                print("image is all 0")
                 print("iteration: {}".format(iteration))
-                break
+
             if iteration % 1000 == 0:
                 sh_map_path = os.path.join(debug_path, 'sh_map')
                 if not os.path.exists(sh_map_path):

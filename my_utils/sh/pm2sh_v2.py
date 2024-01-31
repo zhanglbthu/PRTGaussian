@@ -120,8 +120,8 @@ def dir2sh(direction=[0.,0.], resolution=[32, 16], order=3, scale=1.0):
     sh_basis = torch.stack(sh_basis, dim=-1)  # [h,w,n]
     
     # 根据给定的方向计算对应的像素位置
-    point_x = int(w * phi / (math.pi * 2) + w / 2)
-    point_y = int(h * theta / math.pi)
+    point_x = min(max(int(w * phi / (math.pi * 2) + w / 2), 0), w-1)
+    point_y = min(max(int(h * theta / math.pi), 0), h-1)
     
     # 从球谐基中提取对应位置的系数
     coeffs_at_point = sh_basis[..., point_y, point_x, :] # [n]
