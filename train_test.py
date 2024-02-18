@@ -37,13 +37,33 @@ from configparser import ConfigParser
 from os import makedirs
 import torchvision
 import json
+from model.hash2d import decoder
+
+RESOLUTION = (100, 100)
+
+def get_grid(resolution):
+    width = resolution[0]
+    height = resolution[1]
+    N = width * height
+    pixels = torch.zeros((N, 2), device="cuda")
+    
+    for y in range(height):
+        for x in range(width):
+            pixels[y * width + x, 0] = x
+            pixels[y * width + x, 1] = y
+            
+    return pixels
+
+def compute_diffuse_colors(light_coeffs, pixels):
+    trans_coeffs = decoder(pixels)
+    N = pixels.shape[0]
+    trans_coeffs = trans_coeffs.view(N, 3, 81)
+    light_coeffs = light_coeffs.to("cuda")
+    diffuse_colors = (trans_coeffs * light_coeffs).sum(dim=2) # (N, 3)
+    return diffuse_colors
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, 
              debug_path=None, scale=5.0, debug=False, extension=".png"):
-    # clear log.txt
-    with open('log.txt', 'w') as f:
-        f.write('')
-        f.close()
     
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
@@ -67,6 +87,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         ema_loss_for_log = 0.0
         progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
         first_iter += 1
+        
+        optimizer = torch.optim.Adam(decoder.parameters(), lr=1e-3)
+ 
+        height, width = RESOLUTION
+        pixels = get_grid(RESOLUTION)
+        
         for iteration in range(first_iter, opt.iterations + 1):        
 
             iter_start.record()
@@ -88,15 +114,16 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
             bg = torch.rand((3), device="cuda") if opt.random_background else background
             
-            # envmap = create_env_map(theta=viewpoint_cam.light_theta, phi=viewpoint_cam.light_phi, size=resolution)
-            # light_coeffs, sh_map = pm2sh(envmap, order=9, scale=scale)
             light_coeffs = get_sh_coeffs(direction=(viewpoint_cam.light_phi, viewpoint_cam.light_theta), order=9)
             
-            diffuse_colors = gaussians.precompute_diffuse_colors(light_coeffs, iteration=iteration)
+            gt_image = viewpoint_cam.original_image.cuda()
+
+            diffuse_colors = compute_diffuse_colors(light_coeffs, pixels)
             
-            render_pkg = render(viewpoint_cam, gaussians, pipe, bg, override_color=diffuse_colors) # [0, 1]
-            image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
-            # 监测image是否全为0
+            # 根据diffuse_colors生成image
+            image = diffuse_colors.view(height, width, 3).permute(2, 0, 1)
+            
+            # region 检测+保存image
             if torch.sum(image) == 0:
                 print("image is all 0")
                 print("iteration: {}".format(iteration))
@@ -108,25 +135,23 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 render_path = os.path.join(debug_path, 'render')
                 if not os.path.exists(render_path):
                     os.makedirs(render_path)
-                # save sh_map
-                sh_map = get_pm_from_sh(light_coeffs, resolution=(32, 16), order=9)
-                save_image(sh_map, os.path.join(sh_map_path, '{0:05d}'.format(iteration) + ".png"))
-                # save render image
+
                 image_corrected = pow(image, 1.0/2.2)
                 save_image(image_corrected, os.path.join(render_path, '{0:05d}'.format(iteration) + ".png"))
+            # endregion
 
             # Loss
-            gt_image = viewpoint_cam.original_image.cuda()
             Ll1 = l1_loss(image, gt_image) 
             loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image)) #SRGB
             loss.backward()
             
-            # 如果loss为inf或nan，停止训练
+            # region 如果loss为inf或nan，停止训练
             if torch.isinf(loss) or torch.isnan(loss):
                 print("loss is inf or nan, stop training")
                 print("iteration: {}".format(iteration))
                 break
             iter_end.record()
+            # endregion
 
             with torch.no_grad():
                 # Progress bar
@@ -137,44 +162,21 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 if iteration == opt.iterations:
                     progress_bar.close()
 
-                # Log and save
-                training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
-                if (iteration in saving_iterations):
-                    print("\n[ITER {}] Saving Gaussians".format(iteration))
-                    scene.save(iteration)
-
-                # Densification
-                if iteration < opt.densify_until_iter:
-                    # Keep track of max radii in image-space for pruning
-                    gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
-                    gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
-
-                    if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
-                        size_threshold = 20 if iteration > opt.opacity_reset_interval else None
-                        gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
-                    
-                    if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
-                        gaussians.reset_opacity()
-
                 # Optimizer step
                 if iteration < opt.iterations:
-                    gaussians.optimizer.step()
-                    gaussians.optimizer.zero_grad(set_to_none = True)
+                    optimizer.step()
+                    optimizer.zero_grad(set_to_none = True)
                     
-                    gaussians.optimizer_decoder.step()
-                    gaussians.optimizer_decoder.zero_grad(set_to_none = True)
-
-                if (iteration in checkpoint_iterations):
-                    print("\n[ITER {}] Saving Checkpoint".format(iteration))
-                    torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
+                # Log and save
+                training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
 
     if not debug:
-        new_scene = Scene(dataset, gaussians, load_iteration=opt.iterations, shuffle=False, extension=extension)  
+        new_scene = Scene(dataset, gaussians, shuffle=False, extension=extension)  
     else:
         new_scene = Scene(dataset, gaussians, shuffle=False)
         print("Rendering debug images")
-    render_set(dataset.model_path, "train", opt.iterations, new_scene.getTrainCameras(), gaussians, pipe, background, scale=scale, debug_path=debug_path)
-    render_set(dataset.model_path, "test", opt.iterations, new_scene.getTestCameras(), gaussians, pipe, background, scale=scale, debug_path=debug_path)
+    render_set(dataset.model_path, "train", opt.iterations, new_scene.getTrainCameras(), pixels)
+    render_set(dataset.model_path, "test", opt.iterations, new_scene.getTestCameras(), pixels)
 
 def prepare_output_and_logger(args):    
     if not args.model_path:
@@ -235,29 +237,21 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
             tb_writer.add_scalar('total_points', scene.gaussians.get_xyz.shape[0], iteration)
         torch.cuda.empty_cache()
 
-def render_set(model_path, name, iteration, views, gaussians : GaussianModel, pipeline, background, scale=1.0, debug_path=None):
+def render_set(model_path, name, iteration, views, pixels):
+    
     render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
     gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
 
     makedirs(render_path, exist_ok=True)
     makedirs(gts_path, exist_ok=True)
-    
-    if debug_path:
-        sh_map_path = os.path.join(debug_path, 'sh_map_ordered')
-        if not os.path.exists(sh_map_path):
-            os.makedirs(sh_map_path)
 
     for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
         
         light_coeffs = get_sh_coeffs(direction=(view.light_phi, view.light_theta), order=9)
-        sh_map = get_pm_from_sh(light_coeffs, resolution=(32, 16), order=9)
         
-        if debug:
-            save_image(sh_map, os.path.join(sh_map_path, '{0:05d}'.format(idx) + ".png"))
+        diffuse_colors = compute_diffuse_colors(light_coeffs, pixels)
         
-        diffuse_colors = gaussians.precompute_diffuse_colors(light_coeffs)
-        
-        rendering = render(view, gaussians, pipeline, background, override_color=diffuse_colors)["render"]
+        rendering = diffuse_colors.view(RESOLUTION[1], RESOLUTION[0], 3).permute(2, 0, 1)
         gt = view.original_image[0:3, :, :]
         
         # correct rendering
