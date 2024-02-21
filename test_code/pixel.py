@@ -12,6 +12,10 @@ def get_grid(resolution):
             pixels[y * width + x, 0] = x
             pixels[y * width + x, 1] = y
             
+    # 将像素坐标归一化到 [0, 1] 区间
+    pixels[:, 0] = pixels[:, 0] / (width - 1)
+    pixels[:, 1] = pixels[:, 1] / (height - 1)    
+
     return pixels
 
 # 调用函数

@@ -2,7 +2,7 @@ import commentjson as json
 import tinycudann as tcnn
 import torch
 
-with open("config/config_hash.json") as f:
+with open("config/config.json") as f:
 	config = json.load(f)
 
 n_input_dims = 2
