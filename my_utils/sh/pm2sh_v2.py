@@ -99,10 +99,10 @@ def get_pm_from_sh(coeffs, resolution=[32, 16], order=3):
 
 if __name__ == "__main__":
     direction = [0., np.pi/4]
-    order = 12
+    order = 4
     coffes = get_sh_coeffs(direction, order=order)
     print(coffes.shape)
-    pm = get_pm_from_sh(coffes, resolution=[640, 320], order=order)
+    pm = get_pm_from_sh(coffes, resolution=[64, 32], order=order)
     print(pm.shape)
     # 保存为.exr格式
     imageio.imwrite("test/sh" + "_" + str(order) + ".exr", pm.permute(1, 2, 0).numpy())

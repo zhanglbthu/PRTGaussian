@@ -41,28 +41,44 @@ import tinycudann as tcnn
 RESOLUTION = (400, 400)
 
 def get_grid(resolution):
-    width = resolution[0]
-    height = resolution[1]
-    N = width * height
-    pixels = torch.zeros((N, 2), device="cuda")
+    # width = resolution[0]
+    # height = resolution[1]
+    # N = width * height
+    # pixels = torch.zeros((N, 2), device="cuda")
     
-    for y in range(height):
-        for x in range(width):
-            pixels[y * width + x, 0] = x
-            pixels[y * width + x, 1] = y
+    # for y in range(height):
+    #     for x in range(width):
+    #         pixels[y * width + x, 0] = x
+    #         pixels[y * width + x, 1] = y
     
-    # Normalize
-    pixels[:, 0] = pixels[:, 0] / (width - 1)
-    pixels[:, 1] = pixels[:, 1] / (height - 1)
+    # # Normalize
+    # pixels[:, 0] = pixels[:, 0] / (width - 1)
+    # pixels[:, 1] = pixels[:, 1] / (height - 1)
             
+    # return pixels
+    
+    half_dx = 0.5 / resolution[0]
+    half_dy = 0.5 / resolution[1]
+    xs = torch.linspace(half_dx, 1-half_dx, resolution[0], device="cuda")
+    ys = torch.linspace(half_dy, 1-half_dy, resolution[1], device="cuda")
+    xv, yv = torch.meshgrid([xs, ys])
+    
+    pixels = torch.stack((yv.flatten(), xv.flatten())).t()
     return pixels
 
 def compute_diffuse_colors(light_coeffs, pixels, decoder, order):
     trans_coeffs = decoder(pixels)
+    
     N = pixels.shape[0]
-    trans_coeffs = trans_coeffs.view(N, 3, order**2)
+    
+    # d = trans_coeffs.view(N, 3, order**2)
+    x_front = trans_coeffs[:, :48].view(N, 3, 4**2)
+    x_back = trans_coeffs[:, 48:].repeat(1, 3).view(N, 3, order**2 - 4**2)
+    d = torch.cat((x_front, x_back), dim=2)
+    
     light_coeffs = light_coeffs.to("cuda")
-    diffuse_colors = (trans_coeffs * light_coeffs).sum(dim=2) # (N, 3)
+    
+    diffuse_colors = (d * light_coeffs).sum(dim=2) # (N, 3)
     return diffuse_colors
 
 def training(dataset, opt, pipe, testing_iterations, debug_from, 
@@ -329,7 +345,13 @@ if __name__ == "__main__":
     
     # 定义模型
     n_input_dims = 2
-    n_output_dims = 3 * order ** 2
+    dc_dims = 3 * 4 ** 2
+    dm_dims = 1 * (order ** 2 - 4 ** 2)
+    n_output_dims = dc_dims + dm_dims
+    
+    print("n_input_dims: {}".format(n_input_dims))
+    print("n_output_dims: {}".format(n_output_dims))
+    
     model = tcnn.NetworkWithInputEncoding(n_input_dims=n_input_dims, n_output_dims=n_output_dims, encoding_config=hash_config["encoding"], network_config=hash_config["network"]).to("cuda")
     
     training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.debug_from, 
