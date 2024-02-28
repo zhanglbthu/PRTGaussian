@@ -37,9 +37,29 @@ from configparser import ConfigParser
 from os import makedirs
 import torchvision
 import json
+import tinycudann as tcnn
+
+def compute_diffuse_colors(light_coeffs, gaussians : GaussianModel, model, color_order, total_order):
+
+    xyz = gaussians.get_xyz.clone().detach()
+    
+    N = xyz.shape[0]
+    if torch.cuda.is_available():
+        xyz = xyz.to("cuda") # (N, 3)
+        light_coeffs = light_coeffs.to("cuda")
+        
+    trans_coeffs = model(xyz)
+        
+    x_front = trans_coeffs[:, :3*color_order**2] . view(N, 3, color_order**2)
+    x_back = trans_coeffs[:, 3*color_order**2:] . repeat(1, 3).view(N, 3, total_order**2 - color_order**2)
+    d = torch.cat((x_front, x_back), dim=2)
+    
+    diffuse_colors = (d * light_coeffs).sum(dim=2)
+    return diffuse_colors
+    
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, 
-             debug_path=None, scale=5.0, debug=False, extension=".png"):
+             debug_path=None, debug=False, extension=".png", model=None, lr=0.0001, color_order=3, total_order=9):
     # clear log.txt
     with open('log.txt', 'w') as f:
         f.write('')
@@ -67,6 +87,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         ema_loss_for_log = 0.0
         progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
         first_iter += 1
+        
+        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+        
         for iteration in range(first_iter, opt.iterations + 1):        
 
             iter_start.record()
@@ -88,11 +111,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
             bg = torch.rand((3), device="cuda") if opt.random_background else background
             
-            # envmap = create_env_map(theta=viewpoint_cam.light_theta, phi=viewpoint_cam.light_phi, size=resolution)
-            # light_coeffs, sh_map = pm2sh(envmap, order=9, scale=scale)
-            light_coeffs = get_sh_coeffs(direction=(viewpoint_cam.light_phi, viewpoint_cam.light_theta), order=9)
+            light_coeffs = get_sh_coeffs(direction=(viewpoint_cam.light_phi, viewpoint_cam.light_theta), order=total_order)
             
-            diffuse_colors = gaussians.precompute_diffuse_colors(light_coeffs, iteration=iteration)
+            diffuse_colors = compute_diffuse_colors(light_coeffs, gaussians, model, color_order, total_order)
             
             render_pkg = render(viewpoint_cam, gaussians, pipe, bg, override_color=diffuse_colors) # [0, 1]
             image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
@@ -109,7 +130,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 if not os.path.exists(render_path):
                     os.makedirs(render_path)
                 # save sh_map
-                sh_map = get_pm_from_sh(light_coeffs, resolution=(32, 16), order=9)
+                sh_map = get_pm_from_sh(light_coeffs, resolution=(32, 16), order=total_order)
                 save_image(sh_map, os.path.join(sh_map_path, '{0:05d}'.format(iteration) + ".png"))
                 # save render image
                 image_corrected = pow(image, 1.0/2.2)
@@ -138,7 +159,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     progress_bar.close()
 
                 # Log and save
-                training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
+                training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background)
+                                , gaussians, model, color_order, total_order)
                 if (iteration in saving_iterations):
                     print("\n[ITER {}] Saving Gaussians".format(iteration))
                     scene.save(iteration)
@@ -161,8 +183,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     gaussians.optimizer.step()
                     gaussians.optimizer.zero_grad(set_to_none = True)
                     
-                    gaussians.optimizer_decoder.step()
-                    gaussians.optimizer_decoder.zero_grad(set_to_none = True)
+                    optimizer.step()
+                    optimizer.zero_grad(set_to_none = True)
 
                 if (iteration in checkpoint_iterations):
                     print("\n[ITER {}] Saving Checkpoint".format(iteration))
@@ -173,8 +195,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     else:
         new_scene = Scene(dataset, gaussians, shuffle=False)
         print("Rendering debug images")
-    render_set(dataset.model_path, "train", opt.iterations, new_scene.getTrainCameras(), gaussians, pipe, background, scale=scale, debug_path=debug_path)
-    render_set(dataset.model_path, "test", opt.iterations, new_scene.getTestCameras(), gaussians, pipe, background, scale=scale, debug_path=debug_path)
+    render_set(dataset.model_path, "train", opt.iterations, new_scene.getTrainCameras(), gaussians, pipe, background, debug_path=debug_path, model=model, color_order=color_order, total_order=total_order)
+    render_set(dataset.model_path, "test", opt.iterations, new_scene.getTestCameras(), gaussians, pipe, background, debug_path=debug_path, model=model, color_order=color_order, total_order=total_order)
 
 def prepare_output_and_logger(args):    
     if not args.model_path:
@@ -198,7 +220,8 @@ def prepare_output_and_logger(args):
         print("Tensorboard not available: not logging progress")
     return tb_writer
 
-def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs):
+def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs,
+                    gaussians : GaussianModel = None, model = None, color_order=3, total_order=9):
     if tb_writer:
         tb_writer.add_scalar('train_loss_patches/l1_loss', Ll1.item(), iteration)
         tb_writer.add_scalar('train_loss_patches/total_loss', loss.item(), iteration)
@@ -215,8 +238,14 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                 l1_test = 0.0
                 psnr_test = 0.0
                 for idx, viewpoint in enumerate(config['cameras']):
-                    image = torch.clamp(renderFunc(viewpoint, scene.gaussians, *renderArgs)["render"], 0.0, 1.0)
-                    gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
+                    
+                    # image = torch.clamp(renderFunc(viewpoint, scene.gaussians, *renderArgs)["render"], 0.0, 1.0)
+                    # gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
+                    light_coeffs = get_sh_coeffs(direction=(viewpoint.light_phi, viewpoint.light_theta), order=total_order)
+                    diffuse_colors = compute_diffuse_colors(light_coeffs, gaussians, model, color_order, total_order)
+                    image = render(viewpoint, gaussians, *renderArgs, override_color=diffuse_colors)["render"]
+                    gt_image = viewpoint.original_image.to("cuda")
+                    
                     if tb_writer and (idx < 5):
                         tb_writer.add_images(config['name'] + "_view_{}/render".format(viewpoint.image_name), image[None], global_step=iteration)
                         if iteration == testing_iterations[0]:
@@ -235,7 +264,7 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
             tb_writer.add_scalar('total_points', scene.gaussians.get_xyz.shape[0], iteration)
         torch.cuda.empty_cache()
 
-def render_set(model_path, name, iteration, views, gaussians : GaussianModel, pipeline, background, scale=1.0, debug_path=None):
+def render_set(model_path, name, iteration, views, gaussians : GaussianModel, pipeline, background, debug_path=None, model = None, color_order=3, total_order=9):
     render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
     gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
 
@@ -249,13 +278,13 @@ def render_set(model_path, name, iteration, views, gaussians : GaussianModel, pi
 
     for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
         
-        light_coeffs = get_sh_coeffs(direction=(view.light_phi, view.light_theta), order=9)
-        sh_map = get_pm_from_sh(light_coeffs, resolution=(32, 16), order=9)
+        light_coeffs = get_sh_coeffs(direction=(view.light_phi, view.light_theta), order=total_order)
+        sh_map = get_pm_from_sh(light_coeffs, resolution=(32, 16), order=total_order)
         
         if debug:
             save_image(sh_map, os.path.join(sh_map_path, '{0:05d}'.format(idx) + ".png"))
         
-        diffuse_colors = gaussians.precompute_diffuse_colors(light_coeffs)
+        diffuse_colors = compute_diffuse_colors(light_coeffs, gaussians, model, color_order, total_order)
         
         rendering = render(view, gaussians, pipeline, background, override_color=diffuse_colors)["render"]
         gt = view.original_image[0:3, :, :]
@@ -313,12 +342,12 @@ if __name__ == "__main__":
     args.source_path = source_path
     args.model_path = model_path
     
-    hash_path = 'config/config_hash.json'
+    hash_path = 'config/config.json'
     with open(hash_path) as f:
         hash_config = json.load(f)
     
     # 在model_path下保存config_hash文件
-    with open(os.path.join(model_path, 'config_hash.json'), 'w') as f:
+    with open(os.path.join(model_path, 'config.json'), 'w') as f:
         json.dump(hash_config, f)
     
     print("Optimizing " + args.model_path)
@@ -330,17 +359,29 @@ if __name__ == "__main__":
     # network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
     
-    # resolution_str = config['SH']['resolution'] # 48, 24
-    scale = float(config['SH']['scale']) # 1.0
-    # convert resolution_str to tuple
-    # resolution = tuple(map(int, resolution_str.split(',')))
     debug_path = os.path.join(model_path, 'debug')
     extension = config['SETTING']['extension']
     
     debug = config.getboolean('BOOL', 'debug')
+    
+    lr = config.getfloat('ARGUEMENT', 'lr')
+    color_order = config.getint('ARGUEMENT', 'color_order')
+    total_order = config.getint('ARGUEMENT', 'total_order')
+    
+    # 定义模型
+    n_input_dims = 3
+    dc_dims = 3 * color_order ** 2
+    dm_dims = 1 * (total_order ** 2 - color_order ** 2)
+    n_output_dims = dc_dims + dm_dims
+    
+    print("n_input_dims: {}".format(n_input_dims))
+    print("n_output_dims: {}".format(n_output_dims))
+    
+    model = tcnn.NetworkWithInputEncoding(n_input_dims=n_input_dims, n_output_dims=n_output_dims, encoding_config=hash_config["encoding"], network_config=hash_config["network"]).to("cuda")
+    
     print("debug: {}".format(debug))
     training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, 
-             debug_path, scale, debug, extension)
+             debug_path, debug, extension, model, lr, color_order, total_order)
 
     # All done
     print("\nTraining complete.")

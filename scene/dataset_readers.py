@@ -316,23 +316,37 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png", llffho
     nerf_normalization = getNerfppNorm(train_cam_infos)
 
     ply_path = os.path.join(path, "points3d.ply")
-    if not os.path.exists(ply_path):
-        # Since this data set has no colmap data, we start with random points
-        num_pts = 100_000 # change
-        print(f"Generating random point cloud ({num_pts})...")
+    
+    # if not os.path.exists(ply_path):
+    #     # Since this data set has no colmap data, we start with random points
+    #     num_pts = 100_000 # change
+    #     print(f"Generating random point cloud ({num_pts})...")
         
-        # We create random points inside the bounds of the synthetic Blender scenes
-        xyz = np.random.random((num_pts, 3)) * 2.6 - 1.3 # * (-1.3, 1.3)
-        # change: create the points that z > 0
-        # # 保持x,y坐标不变，z坐标映射到(0, 1.3)
-        # xyz[:, 2] = (xyz[:, 2] + 1.3) / 2.6
-        # assert np.min(xyz[:, 2]) >= 0 and np.max(xyz[:, 2]) <= 1.3, "z coordinate out of bounds"
-        print(f"Generated {xyz.shape[0]} points")
+    #     # We create random points inside the bounds of the synthetic Blender scenes
+    #     xyz = np.random.random((num_pts, 3)) * 2.6 - 1.3 # * (-1.3, 1.3)
+    #     # change: create the points that z > 0
+    #     # # 保持x,y坐标不变，z坐标映射到(0, 1.3)
+    #     print(f"Generated {xyz.shape[0]} points")
 
-        shs = np.random.random((num_pts, 3)) / 255.0
-        pcd = BasicPointCloud(points=xyz, colors=SH2RGB(shs), normals=np.zeros((num_pts, 3)))
+    #     shs = np.random.random((num_pts, 3)) / 255.0
+    #     pcd = BasicPointCloud(points=xyz, colors=SH2RGB(shs), normals=np.zeros((num_pts, 3)))
 
-        storePly(ply_path, xyz, SH2RGB(shs) * 255)
+    #     storePly(ply_path, xyz, SH2RGB(shs) * 255)
+        
+    num_pts = 100_000 # change
+    print(f"Generating random point cloud ({num_pts})...")
+        
+    # We create random points inside the bounds of the synthetic Blender scenes
+    xyz = np.random.random((num_pts, 3)) * 2.6 - 1.3 # * (-1.3, 1.3)
+    # change: create the points that z > 0
+    # # 保持x,y坐标不变，z坐标映射到(0, 1.3)
+    print(f"Generated {xyz.shape[0]} points")
+
+    shs = np.random.random((num_pts, 3)) / 255.0
+    pcd = BasicPointCloud(points=xyz, colors=SH2RGB(shs), normals=np.zeros((num_pts, 3)))
+
+    storePly(ply_path, xyz, SH2RGB(shs) * 255)
+        
     try:
         pcd = fetchPly(ply_path)
     except:

@@ -21,8 +21,6 @@ from simple_knn._C import distCUDA2
 from utils.graphics_utils import BasicPointCloud
 from utils.general_utils import strip_symmetric, build_scaling_rotation
 
-from model.mlp import SHNetwork
-from model.hash import decoder
 import commentjson as json
 import tinycudann as tcnn
 import torch.nn.functional as F
@@ -66,11 +64,6 @@ class GaussianModel:
         self.optimizer = None
         self.percent_dense = 0
         self.spatial_lr_scale = 0
-        self.sh_mlp = SHNetwork()
-        self.decoder = decoder
-        if torch.cuda.is_available():
-            self.sh_mlp.cuda()
-            self.decoder.cuda()
         self.setup_functions()
 
     def capture(self):
@@ -186,7 +179,6 @@ class GaussianModel:
         ]
 
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
-        self.optimizer_decoder = torch.optim.Adam(self.decoder.parameters(), lr=0.001)
         
         self.xyz_scheduler_args = get_expon_lr_func(lr_init=training_args.position_lr_init*self.spatial_lr_scale,
                                                     lr_final=training_args.position_lr_final*self.spatial_lr_scale,
@@ -436,60 +428,3 @@ class GaussianModel:
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter,:2], dim=-1, keepdim=True)
         self.denom[update_filter] += 1
-        
-    def precompute_colors(self, cam_rotation, cam_translation, light_rotation):
-        # 将模型的参数从ndarray转化为tensor
-        cam_rotation = torch.tensor(cam_rotation, dtype=torch.float)
-        cam_translation = torch.tensor(cam_translation, dtype=torch.float)
-        light_rotation = torch.tensor(light_rotation, dtype=torch.float)
-        
-        # [3,3] -> [9]
-        cam_rotation = cam_rotation.flatten()
-        light_rotation = light_rotation.flatten()
-        
-        # copy xyz
-        xyz = self.get_xyz.clone().detach()
-        
-        N = xyz.shape[0]
-
-        # 将所有张量移动到cuda上
-        if torch.cuda.is_available():
-            xyz = xyz.to("cuda")
-            cam_rotation = cam_rotation.to("cuda")
-            cam_translation = cam_translation.to("cuda")
-            light_rotation = light_rotation.to("cuda")
-        
-        inputs = torch.cat([
-            xyz,  # (N, 3)
-            cam_rotation.repeat(N, 1),  # (N, 9)
-            cam_translation.repeat(N, 1),  # (N, 3)
-            light_rotation.repeat(N, 1)  # (N, 9)
-        ], dim=1)  # (N, input_size)
-        
-        colors = self.sh_mlp(inputs)
-        return colors
-    
-    def precompute_diffuse_colors(self, light_coeffs, debug=False, iteration = 0):
-        # 将xyz(N,3)作为decoder的输入
-        xyz = self.get_xyz.clone().detach()
-        N = xyz.shape[0]
-        if torch.cuda.is_available():
-            xyz = xyz.to("cuda") # (N, 3)
-            light_coeffs = light_coeffs.to("cuda") # (1, 3, 81)
-        
-        trans_coeffs = self.decoder(xyz)
-        # trans_coeffs = shifted_softplus(trans_coeffs)
-        
-        if debug:
-            print("trans_coeffs shape: ", trans_coeffs.shape)
-        
-        # 计算diffuse colors: (N, 3)
-        # convert trans_coeffs from (N, 243) to (N, 3, 81)
-        trans_coeffs = trans_coeffs.view(N, 3, 81)
-        
-        diffuse_colors = (trans_coeffs * light_coeffs).sum(dim=2)
-        
-        if debug:
-            print("diffuse_colors shape: ", diffuse_colors.shape)
-        
-        return diffuse_colors

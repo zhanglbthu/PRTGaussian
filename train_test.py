@@ -38,24 +38,13 @@ import torchvision
 import json
 import tinycudann as tcnn
 
-RESOLUTION = (400, 400)
+RESOLUTION = (800, 800)
+
+# Hyper-parameters
+lambda_l1 = 10.0
+lambda_dssim = 0.2
 
 def get_grid(resolution):
-    # width = resolution[0]
-    # height = resolution[1]
-    # N = width * height
-    # pixels = torch.zeros((N, 2), device="cuda")
-    
-    # for y in range(height):
-    #     for x in range(width):
-    #         pixels[y * width + x, 0] = x
-    #         pixels[y * width + x, 1] = y
-    
-    # # Normalize
-    # pixels[:, 0] = pixels[:, 0] / (width - 1)
-    # pixels[:, 1] = pixels[:, 1] / (height - 1)
-            
-    # return pixels
     
     half_dx = 0.5 / resolution[0]
     half_dy = 0.5 / resolution[1]
@@ -82,7 +71,7 @@ def compute_diffuse_colors(light_coeffs, pixels, decoder, order):
     return diffuse_colors
 
 def training(dataset, opt, pipe, testing_iterations, debug_from, 
-             debug_path=None, debug=False, extension=".png", decoder=None, lr=1e-2, order=3):
+             debug_path=None, debug=False, extension=".png", decoder=None, lr=1e-2, order=3, iterations=100_000):
     
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
@@ -104,7 +93,7 @@ def training(dataset, opt, pipe, testing_iterations, debug_from,
         height, width = RESOLUTION
         pixels = get_grid(RESOLUTION)
         
-        for iteration in range(first_iter, opt.iterations + 1):        
+        for iteration in range(first_iter, iterations + 1):       
 
             iter_start.record()
 
@@ -148,7 +137,8 @@ def training(dataset, opt, pipe, testing_iterations, debug_from,
 
             # Loss
             Ll1 = l1_loss(image, gt_image) 
-            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image)) #SRGB
+            # loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image)) #SRGB
+            loss = lambda_l1 * Ll1 + lambda_dssim * (1.0 - ssim(image, gt_image)) # Linear
             loss.backward()
             
             # region 如果loss为inf或nan，停止训练
@@ -326,6 +316,10 @@ if __name__ == "__main__":
     # 在model_path下保存config_hash文件
     with open(os.path.join(model_path, 'config.json'), 'w') as f:
         json.dump(hash_config, f)
+        
+    # 在model_path下保存.py文件
+    with open(os.path.join(model_path, 'train_test.py'), 'w') as f:
+        f.write(open('train_test.py').read())
     
     print("Optimizing " + args.model_path)
 
@@ -341,7 +335,8 @@ if __name__ == "__main__":
     print("debug: {}".format(debug))
     
     lr = config.getfloat('ARGUEMENT', 'lr')
-    order = config.getint('ARGUEMENT', 'order')
+    order = config.getint('ARGUEMENT', 'total_order')
+    iterations = config.getint('ARGUEMENT', 'iterations')
     
     # 定义模型
     n_input_dims = 2
@@ -355,7 +350,7 @@ if __name__ == "__main__":
     model = tcnn.NetworkWithInputEncoding(n_input_dims=n_input_dims, n_output_dims=n_output_dims, encoding_config=hash_config["encoding"], network_config=hash_config["network"]).to("cuda")
     
     training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.debug_from, 
-             debug_path, debug, extension, model, lr, order)
+             debug_path, debug, extension, model, lr, order, iterations)
 
     # All done
     print("\nTraining complete.")
