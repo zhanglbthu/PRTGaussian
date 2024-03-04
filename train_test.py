@@ -128,7 +128,8 @@ def training(dataset, opt, pipe, testing_iterations, debug_from,
                 if not os.path.exists(render_path):
                     os.makedirs(render_path)
 
-                image_corrected = pow(image, 1.0/2.2)
+                if extension == '.exr':
+                    image_corrected = pow(image, 1.0/2.2)
                 sh_map = get_pm_from_sh(light_coeffs, resolution=[128, 64], order=order)
                 sh_map_corrected = sh_map / sh_map.max()
                 save_image(image_corrected, os.path.join(render_path, '{0:05d}'.format(iteration) + ".png"))
@@ -257,8 +258,9 @@ def render_set(model_path, name, iteration, views, pixels, decoder = None, order
         gt = view.original_image[0:3, :, :]
         
         # correct rendering
-        rendering = pow(rendering, 1.0/2.2)
-        gt = pow(gt, 1.0/2.2)
+        if extension == '.exr':
+            rendering = pow(rendering, 1.0/2.2)
+            gt = pow(gt, 1.0/2.2)
         
         torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
         torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))

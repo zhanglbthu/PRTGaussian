@@ -1,10 +1,10 @@
 #!/bin/bash
 blender_path="/root/blender-3.6.5-linux-x64/blender"
-objs=(lego_specular_point)
+objs=(hotdog_specular_point)
 gpus=(0 1 2 3 4 5 6 7)
 source_path="/root/autodl-tmp/blender_code/shadow_neus/blend_files"
 
-root_path="/root/autodl-tmp/gaussian-splatting/blender/1_1200_plus"
+root_path="/root/autodl-tmp/gaussian-splatting/blender/20_100_png"
 
 cur_idx=0
 tmux_name=directional_light_render
