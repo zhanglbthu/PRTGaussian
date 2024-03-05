@@ -29,6 +29,8 @@ from mpl_toolkits.mplot3d import Axes3D
 import OpenEXR
 import Imath
 
+from tqdm import tqdm
+
 class CameraInfo(NamedTuple):
     uid: int
     R: np.array
@@ -197,7 +199,7 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
         fovx = contents["camera_angle_x"]
 
         frames = contents["frames"]
-        for idx, frame in enumerate(frames):
+        for idx, frame in tqdm(enumerate(frames)):
             # 打印读取进度
             sys.stdout.write('\r')
             # the exact output you're looking for:

@@ -133,7 +133,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 sh_map = get_pm_from_sh(light_coeffs, resolution=(32, 16), order=total_order)
                 save_image(sh_map, os.path.join(sh_map_path, '{0:05d}'.format(iteration) + ".png"))
                 # save render image
-                image_corrected = pow(image, 1.0/2.2)
+                image_corrected = pow(image, 1.0/2.2) if extension == ".exr" else image
                 save_image(image_corrected, os.path.join(render_path, '{0:05d}'.format(iteration) + ".png"))
 
             # Loss
@@ -289,9 +289,9 @@ def render_set(model_path, name, iteration, views, gaussians : GaussianModel, pi
         rendering = render(view, gaussians, pipeline, background, override_color=diffuse_colors)["render"]
         gt = view.original_image[0:3, :, :]
         
-        # correct rendering
-        rendering = pow(rendering, 1.0/2.2)
-        gt = pow(gt, 1.0/2.2)
+        # correct renderingt
+        # rendering = pow(rendering, 1.0/2.2) 
+        # gt = pow(gt, 1.0/2.2)
         
         torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
         torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
