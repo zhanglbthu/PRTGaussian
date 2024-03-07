@@ -18,24 +18,31 @@ from scene.gaussian_model import GaussianModel
 from arguments import ModelParams
 from utils.camera_utils import cameraList_from_camInfos, camera_to_JSON
 from utils.light_utils import light_to_JSON
+import sys
 
 class Scene:
 
     gaussians : GaussianModel
 
-    def __init__(self, args : ModelParams, gaussians : GaussianModel, load_iteration=None, shuffle=True, resolution_scales=[1.0], extension=".png"):
+    def __init__(self, 
+                 args : ModelParams, 
+                 gaussians : GaussianModel, 
+                 load_iteration=None, 
+                 shuffle=True, 
+                 resolution_scales=[1.0], 
+                 extension=".png", 
+                 model_path="None", 
+                 source_path="None",
+                 data_type="OpenIllumination",
+                 num_pts=100000):
+        
         """
         :param path: Path to colmap scene main folder.
         """
-        self.model_path = args.model_path
-        self.extension = extension
-        
-        # change: Create model path if it does not exist
-        if not os.path.exists(self.model_path):
-            os.makedirs(self.model_path)
         
         self.loaded_iter = None
         self.gaussians = gaussians
+        self.model_path = model_path
 
         if load_iteration:
             if load_iteration == -1:
@@ -47,16 +54,23 @@ class Scene:
         self.train_cameras = {}
         self.test_cameras = {}
 
-        if os.path.exists(os.path.join(args.source_path, "sparse")):
-            scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.eval)
-        elif os.path.exists(os.path.join(args.source_path, "transforms_train.json")):
+        # change source path
+        if os.path.exists(os.path.join(source_path, "sparse")):
+            scene_info = sceneLoadTypeCallbacks["Colmap"](source_path, "images", args.eval)
+            
+        elif os.path.exists(os.path.join(source_path, "transforms_train.json")):
             print("Found transforms_train.json file, assuming Blender data set!")
-            scene_info = sceneLoadTypeCallbacks["Blender"](args.source_path, args.white_background, args.eval, extension=self.extension)
+            scene_info = sceneLoadTypeCallbacks["Blender"](source_path, args.white_background, args.eval, extension=extension)
+        
+        elif data_type == "OpenIllumination":
+            print("Found OpenIllumination data set!")
+            scene_info = sceneLoadTypeCallbacks["OpenIllumination"](source_path, num_pts, args.eval)
+        
         else:
             assert False, "Could not recognize scene type!"
 
         if not self.loaded_iter:
-            with open(scene_info.ply_path, 'rb') as src_file, open(os.path.join(self.model_path, "input.ply") , 'wb') as dest_file:
+            with open(scene_info.ply_path, 'rb') as src_file, open(os.path.join(model_path, "input.ply") , 'wb') as dest_file:
                 dest_file.write(src_file.read())
             json_cams = []
             camlist = []
@@ -74,7 +88,9 @@ class Scene:
             random.shuffle(scene_info.test_cameras)  # Multi-res consistent random shuffling
 
         self.cameras_extent = scene_info.nerf_normalization["radius"]
-
+        print("successfully loaded scene")
+        sys,exit()
+        
         for resolution_scale in resolution_scales:
             print("Loading Training Cameras")
             self.train_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.train_cameras, resolution_scale, args)

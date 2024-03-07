@@ -30,23 +30,22 @@ import OpenEXR
 import Imath
 
 from tqdm import tqdm
+from my_utils.math_utils import compute_angles, compute_angle
 
 class CameraInfo(NamedTuple):
     uid: int
+    cam_id: str
+    light_id: int
     R: np.array
     T: np.array
-    cam_theta: float
-    cam_phi: float
-    light_theta: float
-    light_phi: float
     FovY: np.array
     FovX: np.array
     image: np.array
     image_path: str
     image_name: str
-    extension: str
     width: int
     height: int
+
 class SceneInfo(NamedTuple):
     point_cloud: BasicPointCloud
     train_cameras: list
@@ -117,6 +116,21 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
     sys.stdout.write('\n')
     return cam_infos
 
+def randamPly(path, num_pts):
+    xyz = np.random.random((num_pts, 3)) * 2.6 - 1.3 # * (-1.3, 1.3)
+    print(f"Generated {xyz.shape[0]} points")
+    shs = np.random.random((num_pts, 3)) / 255.0
+    pcd = BasicPointCloud(points=xyz, colors=SH2RGB(shs), normals=np.zeros((num_pts, 3)))
+
+    storePly(path, xyz, SH2RGB(shs) * 255)
+        
+    try:
+        pcd = fetchPly(path)
+    except:
+        pcd = None
+        
+    return pcd
+
 def fetchPly(path):
     plydata = PlyData.read(path)
     vertices = plydata['vertex']
@@ -140,6 +154,7 @@ def storePly(path, xyz, rgb):
     # Create the PlyData object and write to file
     vertex_element = PlyElement.describe(elements, 'vertex')
     ply_data = PlyData([vertex_element])
+    
     ply_data.write(path)
 
 def readColmapSceneInfo(path, images, eval, llffhold=8):
@@ -201,10 +216,6 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
         frames = contents["frames"]
         for idx, frame in tqdm(enumerate(frames)):
             # 打印读取进度
-            sys.stdout.write('\r')
-            # the exact output you're looking for:
-            sys.stdout.write("Reading camera {}/{}".format(idx+1, len(frames)))
-            sys.stdout.flush()
             
             cam_name = os.path.join(path, frame["file_path"] + extension)
 
@@ -273,19 +284,38 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
                             cam_phi=cam_phi, cam_theta=cam_theta, light_phi=light_phi, light_theta=light_theta,
                             image_path=image_path, image_name=image_name, extension=extension, width=size[0], height=size[1]))
             
-    return cam_infos, light_angles
+    return cam_infos, light_angles    
 
-def compute_angle(direction):
-    # * T: translation
-    # * theta: elevation angle
-    # * phi: azimuth angle
-    direction_normlized = direction / np.linalg.norm(direction) # (3,)
+def readCamerasFromOpenIlluminations(path, cam_train, cam_test):
+    train_cam_infos = []
+    test_cam_infos = []
     
-    phi = np.arctan2(direction_normlized[1], direction_normlized[0]) # (-pi, pi)
-    theta = np.arccos(direction_normlized[2]) # (0, pi)
+    root_folder = os.path.join(path, "Lights")
     
-    return phi, theta
-    
+    # traverse lights
+    for light_id in tqdm(sorted(os.listdir(root_folder)), desc="Reading Folders"):
+        # traverse cams
+        cam_folder = os.path.join(root_folder, light_id)
+        for idx, image_folder in enumerate(sorted(os.listdir(cam_folder))):
+            # image为image_folder下唯一的文件
+            image = os.listdir(os.path.join(cam_folder, image_folder))[0]
+            
+            cam_id = image.split(".")[0]
+            
+            # read image
+            img_path = os.path.join(cam_folder, image_folder, image)
+            img = Image.open(img_path)
+            img_data = np.array(img.convert("RGB"))
+            
+            # check if cam_id is in train or test
+            if cam_id in cam_train:
+                cam_info = cam_train[cam_id]
+                train_cam_infos.append(initCamera(img_data, img_path, cam_info, light_id, idx, cam_id))
+            else:
+                cam_info = cam_test[cam_id]
+                test_cam_infos.append(initCamera(img_data, img_path, cam_info, light_id, idx, cam_id))
+            
+    return train_cam_infos, test_cam_infos
 
 def readNerfSyntheticInfo(path, white_background, eval, extension=".png", llffhold=8):
     print("Reading Training Transforms")
@@ -318,41 +348,9 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png", llffho
     nerf_normalization = getNerfppNorm(train_cam_infos)
 
     ply_path = os.path.join(path, "points3d.ply")
-    
-    # if not os.path.exists(ply_path):
-    #     # Since this data set has no colmap data, we start with random points
-    #     num_pts = 100_000 # change
-    #     print(f"Generating random point cloud ({num_pts})...")
-        
-    #     # We create random points inside the bounds of the synthetic Blender scenes
-    #     xyz = np.random.random((num_pts, 3)) * 2.6 - 1.3 # * (-1.3, 1.3)
-    #     # change: create the points that z > 0
-    #     # # 保持x,y坐标不变，z坐标映射到(0, 1.3)
-    #     print(f"Generated {xyz.shape[0]} points")
-
-    #     shs = np.random.random((num_pts, 3)) / 255.0
-    #     pcd = BasicPointCloud(points=xyz, colors=SH2RGB(shs), normals=np.zeros((num_pts, 3)))
-
-    #     storePly(ply_path, xyz, SH2RGB(shs) * 255)
         
     num_pts = 100_000 # change
-    print(f"Generating random point cloud ({num_pts})...")
-        
-    # We create random points inside the bounds of the synthetic Blender scenes
-    xyz = np.random.random((num_pts, 3)) * 2.6 - 1.3 # * (-1.3, 1.3)
-    # change: create the points that z > 0
-    # # 保持x,y坐标不变，z坐标映射到(0, 1.3)
-    print(f"Generated {xyz.shape[0]} points")
-
-    shs = np.random.random((num_pts, 3)) / 255.0
-    pcd = BasicPointCloud(points=xyz, colors=SH2RGB(shs), normals=np.zeros((num_pts, 3)))
-
-    storePly(ply_path, xyz, SH2RGB(shs) * 255)
-        
-    try:
-        pcd = fetchPly(ply_path)
-    except:
-        pcd = None
+    pcd = randamPly(ply_path, num_pts)
 
     scene_info = SceneInfo(point_cloud=pcd,
                            train_cameras=train_cam_infos,
@@ -361,7 +359,91 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png", llffho
                            ply_path=ply_path)
     return scene_info
 
+def readCameraFromJson(json_path):
+    with open(json_path, "r") as file:
+        cam_data = json.load(file)["frames"]
+        
+    mask_folder = os.path.join(os.path.dirname(json_path), "obj_masks")
+    
+    # add obj masks
+    for cam in cam_data:
+        mask_path = os.path.join(mask_folder, cam.split(".")[0] + ".png")
+        mask = Image.open(mask_path)
+        mask = np.array(mask.convert("RGB"))
+        cam_data[cam]["mask"] = mask
+    
+    return cam_data
+    
+def initCamera(img_data, img_path, cam_info, light_id, idx, cam_id):
+    
+    c2w = cam_info["transform_matrix"]
+    w2c = np.linalg.inv(c2w)
+    R = np.transpose(w2c[:3,:3])
+    T = w2c[:3, 3]
+    
+    image_path = img_path
+    image_name = Path(img_path).stem
+    
+    norm_data = img_data / 255.0
+    bg = np.array([0, 0, 0])
+    mask = cam_info["mask"]
+    
+    arr = norm_data[:,:,:3] * mask + bg * (1 - mask)
+    image = Image.fromarray(np.array(arr*255.0, dtype=np.byte), "RGB") # * (H, W, 3)
+    
+    size = image.size
+    
+    fovx = cam_info["camera_angle_x"]
+    fovy = focal2fov(fov2focal(fovx, size[0]), size[1])
+    FovY = fovy
+    FovX = fovx
+    
+    return CameraInfo(uid=idx, cam_id=cam_id, light_id=light_id, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
+                      image_path=image_path, image_name=image_name, width=size[0], height=size[1])
+
+def readOpenIlluminationInfo(source_path, num_pts, eval):
+    
+    # init points
+    ply_path = os.path.join(source_path, "points3d.ply")
+    if not os.path.exists(ply_path):
+        pcd = randamPly(ply_path, num_pts)
+    else:
+        pcd = fetchPly(ply_path)
+    
+    # read light pos
+    light_pos_path = os.path.join(os.path.dirname(source_path), "light_pos.npy")
+    light_pos = np.load(light_pos_path)
+    light_dir = compute_angles(light_pos)
+    
+    # read cam info
+    cam_train_json = os.path.join(source_path, "output", "transforms_train.json")
+    cam_test_json = os.path.join(source_path, "output", "transforms_test.json")
+    cam_train_data = readCameraFromJson(cam_train_json)
+    cam_test_data = readCameraFromJson(cam_test_json)
+
+    print(f"Train: {len(cam_train_data)}, Test: {len(cam_test_data)}")
+    
+    cam_infos = readCamerasFromOpenIlluminations(source_path, cam_train_data, cam_test_data)
+    
+    if eval:
+        train_cam_infos = cam_infos[0]
+        test_cam_infos = cam_infos[1]
+    
+    nerf_normalization = getNerfppNorm(train_cam_infos)
+    
+    scene_info = SceneInfo(point_cloud=pcd,
+                            train_cameras=train_cam_infos,
+                            test_cameras=test_cam_infos,
+                            nerf_normalization=nerf_normalization,
+                            ply_path=ply_path)
+    
+    return scene_info
+    
+    sys.exit()
+    
+
 sceneLoadTypeCallbacks = {
     "Colmap": readColmapSceneInfo,
-    "Blender" : readNerfSyntheticInfo
+    "Blender" : readNerfSyntheticInfo,
+    "OpenIllumination": readOpenIlluminationInfo
 }

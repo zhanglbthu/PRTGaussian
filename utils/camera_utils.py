@@ -14,6 +14,7 @@ import numpy as np
 import torch
 from utils.general_utils import PILtoTorch
 from utils.graphics_utils import fov2focal
+import tqdm
 
 WARNED = False
 
@@ -39,12 +40,14 @@ def loadCam(args, id, cam_info, resolution_scale):
         scale = float(global_down) * float(resolution_scale)
         resolution = (int(orig_w / scale), int(orig_h / scale))
 
-    if cam_info.extension == ".png":
-        resized_image_rgb = PILtoTorch(cam_info.image, resolution)
-    elif cam_info.extension == ".exr":
-        resized_image_rgb = torch.from_numpy(cam_info.image).permute(2, 0, 1)
-    else:
-        assert False, "Unknown image extension: {}".format(cam_info.extension)
+    # if cam_info.extension == ".png":
+    #     resized_image_rgb = PILtoTorch(cam_info.image, resolution)
+    # elif cam_info.extension == ".exr":
+    #     resized_image_rgb = torch.from_numpy(cam_info.image).permute(2, 0, 1)
+    # else:
+    #     assert False, "Unknown image extension: {}".format(cam_info.extension)
+    
+    resized_image_rgb = PILtoTorch(cam_info.image, resolution)
 
     gt_image = resized_image_rgb[:3, ...]
     loaded_mask = None
@@ -61,10 +64,7 @@ def loadCam(args, id, cam_info, resolution_scale):
 def cameraList_from_camInfos(cam_infos, resolution_scale, args):
     camera_list = []
 
-    for id, c in enumerate(cam_infos):
-        # 打印进度条
-        if id % 100 == 0:
-            print("Loading camera {} of {}".format(id, len(cam_infos)))
+    for id, c in tqdm(enumerate(cam_infos), desc="Loading cameras", total=len(cam_infos)):
         camera_list.append(loadCam(args, id, c, resolution_scale))
 
     return camera_list
