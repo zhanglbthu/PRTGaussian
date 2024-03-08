@@ -28,9 +28,9 @@ class Scene:
                  args : ModelParams, 
                  gaussians : GaussianModel, 
                  load_iteration=None, 
-                 shuffle=True, 
+                 shuffle=True,
+                 resolution_scale=1.0,
                  resolution_scales=[1.0], 
-                 extension=".png", 
                  model_path="None", 
                  source_path="None",
                  data_type="OpenIllumination",
@@ -60,15 +60,19 @@ class Scene:
             
         elif os.path.exists(os.path.join(source_path, "transforms_train.json")):
             print("Found transforms_train.json file, assuming Blender data set!")
-            scene_info = sceneLoadTypeCallbacks["Blender"](source_path, args.white_background, args.eval, extension=extension)
+            scene_info = sceneLoadTypeCallbacks["Blender"](source_path, args.white_background, args.eval)
         
         elif data_type == "OpenIllumination":
             print("Found OpenIllumination data set!")
-            scene_info = sceneLoadTypeCallbacks["OpenIllumination"](source_path, num_pts, args.eval)
+            scene_info = sceneLoadTypeCallbacks["OpenIllumination"](source_path, num_pts, resolution_scale, args.eval)
         
         else:
             assert False, "Could not recognize scene type!"
 
+        if scene_info.light_info is not None:
+            print("Loading Light Info")
+            self.light_info = scene_info.light_info
+        
         if not self.loaded_iter:
             with open(scene_info.ply_path, 'rb') as src_file, open(os.path.join(model_path, "input.ply") , 'wb') as dest_file:
                 dest_file.write(src_file.read())
@@ -78,6 +82,9 @@ class Scene:
                 camlist.extend(scene_info.train_cameras)
             if scene_info.test_cameras:
                 camlist.extend(scene_info.test_cameras)
+                
+            print(len(camlist))
+                
             for id, cam in enumerate(camlist):
                 json_cams.append(camera_to_JSON(id, cam))
             with open(os.path.join(self.model_path, "cameras.json"), 'w') as file:
@@ -89,7 +96,6 @@ class Scene:
 
         self.cameras_extent = scene_info.nerf_normalization["radius"]
         print("successfully loaded scene")
-        sys,exit()
         
         for resolution_scale in resolution_scales:
             print("Loading Training Cameras")
@@ -114,3 +120,6 @@ class Scene:
 
     def getTestCameras(self, scale=1.0):
         return self.test_cameras[scale]
+    
+    def getLightInfo(self):
+        return self.light_info

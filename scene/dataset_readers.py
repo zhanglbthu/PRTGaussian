@@ -52,6 +52,7 @@ class SceneInfo(NamedTuple):
     test_cameras: list
     nerf_normalization: dict
     ply_path: str
+    light_info: list = None
 
 def getNerfppNorm(cam_info):
     def get_center_and_diag(cam_centers):
@@ -286,34 +287,35 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
             
     return cam_infos, light_angles    
 
-def readCamerasFromOpenIlluminations(path, cam_train, cam_test):
+def readCamerasFromOpenIlluminations(path, cam_train, cam_test, resolution_scale):
     train_cam_infos = []
     test_cam_infos = []
     
     root_folder = os.path.join(path, "Lights")
     
     # traverse lights
-    for light_id in tqdm(sorted(os.listdir(root_folder)), desc="Reading Folders"):
+    for light_id in os.listdir(root_folder):
         # traverse cams
-        cam_folder = os.path.join(root_folder, light_id)
-        for idx, image_folder in enumerate(sorted(os.listdir(cam_folder))):
-            # image为image_folder下唯一的文件
-            image = os.listdir(os.path.join(cam_folder, image_folder))[0]
+        cam_folder = os.path.join(root_folder, light_id, "raw_undistorted")
+        for idx, image in enumerate(os.listdir(cam_folder)):
+            
+            current_step = int(light_id) * len(os.listdir(cam_folder)) + idx
+            sys.stdout.write('\r')
+            # 可视化进度条
+            sys.stdout.write("Reading camera {}/{}".format(current_step, len(os.listdir(cam_folder)) * len(os.listdir(root_folder))))
             
             cam_id = image.split(".")[0]
-            
+        
             # read image
-            img_path = os.path.join(cam_folder, image_folder, image)
-            img = Image.open(img_path)
-            img_data = np.array(img.convert("RGB"))
+            img_path = os.path.join(cam_folder, image)
             
             # check if cam_id is in train or test
             if cam_id in cam_train:
                 cam_info = cam_train[cam_id]
-                train_cam_infos.append(initCamera(img_data, img_path, cam_info, light_id, idx, cam_id))
+                train_cam_infos.append(initCamera(idx, cam_id, light_id, img_path, cam_info, resolution_scale))
             else:
                 cam_info = cam_test[cam_id]
-                test_cam_infos.append(initCamera(img_data, img_path, cam_info, light_id, idx, cam_id))
+                test_cam_infos.append(initCamera(idx, cam_id, light_id, img_path, cam_info, resolution_scale))
             
     return train_cam_infos, test_cam_infos
 
@@ -359,7 +361,7 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png", llffho
                            ply_path=ply_path)
     return scene_info
 
-def readCameraFromJson(json_path):
+def readCameraFromJson(json_path, resolution_scale):
     with open(json_path, "r") as file:
         cam_data = json.load(file)["frames"]
         
@@ -369,12 +371,14 @@ def readCameraFromJson(json_path):
     for cam in cam_data:
         mask_path = os.path.join(mask_folder, cam.split(".")[0] + ".png")
         mask = Image.open(mask_path)
-        mask = np.array(mask.convert("RGB"))
-        cam_data[cam]["mask"] = mask
+        resized_mask = mask.resize((int(mask.width / resolution_scale), int(mask.height / resolution_scale)))
+        
+        mask_data = np.array(resized_mask.convert("RGB")) / 255.0
+        cam_data[cam]["mask"] = mask_data
     
     return cam_data
     
-def initCamera(img_data, img_path, cam_info, light_id, idx, cam_id):
+def initCamera(idx, cam_id, light_id, img_path, cam_info, resolution_scale):
     
     c2w = cam_info["transform_matrix"]
     w2c = np.linalg.inv(c2w)
@@ -384,11 +388,18 @@ def initCamera(img_data, img_path, cam_info, light_id, idx, cam_id):
     image_path = img_path
     image_name = Path(img_path).stem
     
-    norm_data = img_data / 255.0
-    bg = np.array([0, 0, 0])
-    mask = cam_info["mask"]
+    image = Image.open(image_path)
+    resized_image = image.resize((int(image.width / resolution_scale), int(image.height / resolution_scale)))
+    img_data = np.array(resized_image.convert("RGB"))
     
-    arr = norm_data[:,:,:3] * mask + bg * (1 - mask)
+    norm_data = img_data / 255.0
+    bg = np.array([0., 0., 0.])
+    
+    mask_data = cam_info["mask"]
+    
+    assert mask_data.shape[0] == img_data.shape[0] 
+    
+    arr = norm_data[:,:,:3] * mask_data + bg * (1 - mask_data)
     image = Image.fromarray(np.array(arr*255.0, dtype=np.byte), "RGB") # * (H, W, 3)
     
     size = image.size
@@ -398,10 +409,10 @@ def initCamera(img_data, img_path, cam_info, light_id, idx, cam_id):
     FovY = fovy
     FovX = fovx
     
-    return CameraInfo(uid=idx, cam_id=cam_id, light_id=light_id, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
+    return CameraInfo(uid=idx, cam_id=cam_id, light_id=int(light_id), R=R, T=T, FovY=FovY, FovX=FovX, image=image,
                       image_path=image_path, image_name=image_name, width=size[0], height=size[1])
 
-def readOpenIlluminationInfo(source_path, num_pts, eval):
+def readOpenIlluminationInfo(source_path, num_pts, resolution_scale, eval):
     
     # init points
     ply_path = os.path.join(source_path, "points3d.ply")
@@ -413,17 +424,17 @@ def readOpenIlluminationInfo(source_path, num_pts, eval):
     # read light pos
     light_pos_path = os.path.join(os.path.dirname(source_path), "light_pos.npy")
     light_pos = np.load(light_pos_path)
-    light_dir = compute_angles(light_pos)
+    light_info = compute_angles(light_pos)
     
     # read cam info
     cam_train_json = os.path.join(source_path, "output", "transforms_train.json")
     cam_test_json = os.path.join(source_path, "output", "transforms_test.json")
-    cam_train_data = readCameraFromJson(cam_train_json)
-    cam_test_data = readCameraFromJson(cam_test_json)
+    cam_train_data = readCameraFromJson(cam_train_json, resolution_scale)
+    cam_test_data = readCameraFromJson(cam_test_json, resolution_scale)
 
     print(f"Train: {len(cam_train_data)}, Test: {len(cam_test_data)}")
     
-    cam_infos = readCamerasFromOpenIlluminations(source_path, cam_train_data, cam_test_data)
+    cam_infos = readCamerasFromOpenIlluminations(source_path, cam_train_data, cam_test_data, resolution_scale)
     
     if eval:
         train_cam_infos = cam_infos[0]
@@ -435,11 +446,10 @@ def readOpenIlluminationInfo(source_path, num_pts, eval):
                             train_cameras=train_cam_infos,
                             test_cameras=test_cam_infos,
                             nerf_normalization=nerf_normalization,
-                            ply_path=ply_path)
+                            ply_path=ply_path,
+                            light_info=light_info)
     
     return scene_info
-    
-    sys.exit()
     
 
 sceneLoadTypeCallbacks = {

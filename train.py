@@ -78,9 +78,9 @@ class TrainRunner():
         self.test_iterations = kwargs['test_iterations']
         self.save_iterations = kwargs['save_iterations']
         
+        self.resolution_scale = self.config.getfloat('Argument', 'resolution_scale')
         self.num_pts = self.config.getint('Argument', 'num_pts')
         self.lr = self.config.getfloat('Argument', 'lr')
-        self.extension = self.config['Argument']['extension']
         self.color_order = self.config.getint('Argument', 'color_order')
         self.total_order = self.config.getint('Argument', 'total_order')
         
@@ -112,8 +112,12 @@ class TrainRunner():
         with open(os.path.join(self.model_path, 'config.ini'), 'w') as configfile:
             self.config.write(configfile)
         
+        # load diffuse config
+        with open(self.diffuse_config) as f:
+            diffuse_config = json.load(f)
+        
         with open(os.path.join(self.model_path, 'config.json'), 'w') as f:
-            json.dump(self.diffuse_config, f)
+            json.dump(diffuse_config, f)
     
     def _set_model(self, general_config, diffuse_config):
         
@@ -138,12 +142,14 @@ class TrainRunner():
         print("Gaussians created")
         
         scene = Scene(self.dataset, 
-                      gaussians, 
-                      extension=self.extension, 
+                      gaussians,  
                       model_path=self.model_path, 
                       source_path=self.source_path,
                       data_type=self.data_type,
+                      resolution_scale=self.resolution_scale,
                       num_pts=self.num_pts)
+        
+        light_info = scene.getLightInfo()
         
         gaussians.training_setup(self.opt)
         
@@ -178,7 +184,8 @@ class TrainRunner():
                 
                 bg = torch.rand((3), device="cuda") if self.opt.random_background else background
                 
-                light_coeffs = get_sh_coeffs(direction=(viewpoint_cam.light_phi, viewpoint_cam.light_theta), order=self.total_order)
+                light_coeffs = get_sh_coeffs(direction=light_info[viewpoint_cam.light_id], order=self.total_order)
+                
                 diffuse_colors = compute_diffuse_colors(light_coeffs, gaussians, self.diffuse_decoder, self.color_order, self.total_order)
                 render_pkg = render(viewpoint_cam, gaussians, self.pipe, bg, override_color=diffuse_colors)
                 image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
@@ -194,10 +201,12 @@ class TrainRunner():
                     render_path = os.path.join(self.debug_path, 'render')
                     if not os.path.exists(render_path):
                         os.makedirs(render_path)
-                    sh_map = get_pm_from_sh(light_coeffs, resolution=(32, 16), order=self.total_order)
+                        
+                    sh_map = get_pm_from_sh(light_coeffs, resolution=(128, 64), order=self.total_order)
                     save_image(sh_map, os.path.join(sh_map_path, '{0:05d}'.format(iteration) + ".png"))
-                    image_corrected = pow(image, 1.0/2.2) if self.extension == ".exr" else image
-                    save_image(image_corrected, os.path.join(render_path, '{0:05d}'.format(iteration) + ".png"))
+ 
+                    # left: gt, right: render
+                    save_image(torch.cat((viewpoint_cam.original_image[0:3, :, :].to("cuda"), image), 2), os.path.join(render_path, '{0:05d}'.format(iteration) + ".png"))
 
                 gt_image = viewpoint_cam.original_image.cuda()
                 Ll1 = l1_loss(image, gt_image)
@@ -214,8 +223,8 @@ class TrainRunner():
                     if iteration == self.opt.iterations:
                         progress_bar.close()
                     
-                    training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), self.test_iterations, scene, render, (self.pipe, background)
-                                    , gaussians, self.diffuse_decoder, self.color_order, self.total_order)
+                    self.training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), self.test_iterations, scene, (self.pipe, background), gaussians, light_info)
+                    
                     if (iteration in self.save_iterations):
                         print("\n[ITER {}] Saving Gaussians".format(iteration))
                         scene.save(iteration)
@@ -237,12 +246,9 @@ class TrainRunner():
                         
                         optimizer.step()
                         optimizer.zero_grad(set_to_none = True)
-                        
-        new_scene = Scene(self.dataset, gaussians, load_iteration=self.opt.iterations, shuffle=False, 
-                          extension=self.extension, model_path=self.model_path, source_path=self.source_path)
 
-        render_set(self.dataset.model_path, "train", self.opt.iterations, new_scene.getTrainCameras(), gaussians, self.pipe, background, debug_path=self.debug_path, model=self.diffuse_decoder, color_order=self.color_order, total_order=self.total_order)
-        render_set(self.dataset.model_path, "test", self.opt.iterations, new_scene.getTestCameras(), gaussians, self.pipe, background, debug_path=self.debug_path, model=self.diffuse_decoder, color_order=self.color_order, total_order=self.total_order)
+        self.render_set("train", self.opt.iterations, scene.getTrainCameras(), gaussians, self.pipe, background, light_info)
+        self.render_set("test", self.opt.iterations, scene.getTestCameras(), gaussians, self.pipe, background, light_info)
 
     def prepare_output_and_logger(self):    
         if not self.model_path:
@@ -266,73 +272,67 @@ class TrainRunner():
             print("Tensorboard not available: not logging progress")
         return tb_writer
 
-def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs,
-                    gaussians : GaussianModel = None, model = None, color_order=3, total_order=9):
-    if tb_writer:
-        tb_writer.add_scalar('train_loss_patches/l1_loss', Ll1.item(), iteration)
-        tb_writer.add_scalar('train_loss_patches/total_loss', loss.item(), iteration)
-        tb_writer.add_scalar('iter_time', elapsed, iteration)
-
-    # Report test and samples of training set
-    if iteration in testing_iterations:
-        torch.cuda.empty_cache()
-        validation_configs = ({'name': 'test', 'cameras' : scene.getTestCameras()}, 
-                              {'name': 'train', 'cameras' : [scene.getTrainCameras()[idx % len(scene.getTrainCameras())] for idx in range(5, 30, 5)]})
-
-        for config in validation_configs:
-            if config['cameras'] and len(config['cameras']) > 0:
-                l1_test = 0.0
-                psnr_test = 0.0
-                for idx, viewpoint in enumerate(config['cameras']):
-                    
-                    # image = torch.clamp(renderFunc(viewpoint, scene.gaussians, *renderArgs)["render"], 0.0, 1.0)
-                    # gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
-                    light_coeffs = get_sh_coeffs(direction=(viewpoint.light_phi, viewpoint.light_theta), order=total_order)
-                    diffuse_colors = compute_diffuse_colors(light_coeffs, gaussians, model, color_order, total_order)
-                    image = render(viewpoint, gaussians, *renderArgs, override_color=diffuse_colors)["render"]
-                    gt_image = viewpoint.original_image.to("cuda")
-                    
-                    if tb_writer and (idx < 5):
-                        tb_writer.add_images(config['name'] + "_view_{}/render".format(viewpoint.image_name), image[None], global_step=iteration)
-                        if iteration == testing_iterations[0]:
-                            tb_writer.add_images(config['name'] + "_view_{}/ground_truth".format(viewpoint.image_name), gt_image[None], global_step=iteration)
-                    l1_test += l1_loss(image, gt_image).mean().double()
-                    psnr_test += psnr(image, gt_image).mean().double()
-                psnr_test /= len(config['cameras'])
-                l1_test /= len(config['cameras'])          
-                print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
-                if tb_writer:
-                    tb_writer.add_scalar(config['name'] + '/loss_viewpoint - l1_loss', l1_test, iteration)
-                    tb_writer.add_scalar(config['name'] + '/loss_viewpoint - psnr', psnr_test, iteration)
-
+    def training_report(self, tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderArgs,
+                        gaussians : GaussianModel = None, light_info = None):
         if tb_writer:
-            tb_writer.add_histogram("scene/opacity_histogram", scene.gaussians.get_opacity, iteration)
-            tb_writer.add_scalar('total_points', scene.gaussians.get_xyz.shape[0], iteration)
-        torch.cuda.empty_cache()
+            tb_writer.add_scalar('train_loss_patches/l1_loss', Ll1.item(), iteration)
+            tb_writer.add_scalar('train_loss_patches/total_loss', loss.item(), iteration)
+            tb_writer.add_scalar('iter_time', elapsed, iteration)
 
-def render_set(model_path, name, iteration, views, gaussians : GaussianModel, pipeline, background, debug_path=None, model = None, color_order=3, total_order=9):
-    render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
-    gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
+        # Report test and samples of training set
+        if iteration in testing_iterations:
+            torch.cuda.empty_cache()
+            validation_configs = ({'name': 'test', 'cameras' : scene.getTestCameras()}, 
+                                {'name': 'train', 'cameras' : [scene.getTrainCameras()[idx % len(scene.getTrainCameras())] for idx in range(5, 30, 5)]})
 
-    makedirs(render_path, exist_ok=True)
-    makedirs(gts_path, exist_ok=True)
-    
-    if debug_path:
-        sh_map_path = os.path.join(debug_path, 'sh_map_ordered')
-        if not os.path.exists(sh_map_path):
-            os.makedirs(sh_map_path)
+            for config in validation_configs:
+                if config['cameras'] and len(config['cameras']) > 0:
+                    l1_test = 0.0
+                    psnr_test = 0.0
+                    for idx, viewpoint in enumerate(config['cameras']):
+                        
+                        light_coeffs = get_sh_coeffs(direction=light_info[viewpoint.light_id], order=self.total_order)
+                        diffuse_colors = compute_diffuse_colors(light_coeffs, gaussians, self.diffuse_decoder, self.color_order, self.total_order)
+                        image = render(viewpoint, gaussians, *renderArgs, override_color=diffuse_colors)["render"]
+                        gt_image = viewpoint.original_image.to("cuda")
+                        
+                        if tb_writer and (idx < 5):
+                            tb_writer.add_images(config['name'] + "_view_{}/render".format(viewpoint.image_name), image[None], global_step=iteration)
+                            if iteration == testing_iterations[0]:
+                                tb_writer.add_images(config['name'] + "_view_{}/ground_truth".format(viewpoint.image_name), gt_image[None], global_step=iteration)
+                        l1_test += l1_loss(image, gt_image).mean().double()
+                        psnr_test += psnr(image, gt_image).mean().double()
+                    psnr_test /= len(config['cameras'])
+                    l1_test /= len(config['cameras'])          
+                    print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
+                    if tb_writer:
+                        tb_writer.add_scalar(config['name'] + '/loss_viewpoint - l1_loss', l1_test, iteration)
+                        tb_writer.add_scalar(config['name'] + '/loss_viewpoint - psnr', psnr_test, iteration)
 
-    for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
+            if tb_writer:
+                tb_writer.add_histogram("scene/opacity_histogram", scene.gaussians.get_opacity, iteration)
+                tb_writer.add_scalar('total_points', scene.gaussians.get_xyz.shape[0], iteration)
+            torch.cuda.empty_cache()
+
+    def render_set(self, name, iteration, views, gaussians : GaussianModel, pipeline, background, light_info):
         
-        light_coeffs = get_sh_coeffs(direction=(view.light_phi, view.light_theta), order=total_order)
-        
-        diffuse_colors = compute_diffuse_colors(light_coeffs, gaussians, model, color_order, total_order)
-        
-        rendering = render(view, gaussians, pipeline, background, override_color=diffuse_colors)["render"]
-        gt = view.original_image[0:3, :, :]
-        
-        torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
-        torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
+        render_path = os.path.join(self.model_path, name, "ours_{}".format(iteration), "renders")
+        gts_path = os.path.join(self.model_path, name, "ours_{}".format(iteration), "gt")
+
+        makedirs(render_path, exist_ok=True)
+        makedirs(gts_path, exist_ok=True)
+
+        for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
+            
+            light_coeffs = get_sh_coeffs(direction=light_info[view.light_id], order=self.total_order)
+            
+            diffuse_colors = compute_diffuse_colors(light_coeffs, gaussians, self.diffuse_decoder, self.color_order, self.total_order)
+            
+            rendering = render(view, gaussians, pipeline, background, override_color=diffuse_colors)["render"]
+            gt = view.original_image[0:3, :, :]
+            
+            torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
+            torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
 
 if __name__ == "__main__":
     # Set up command line argument parser

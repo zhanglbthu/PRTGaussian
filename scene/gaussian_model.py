@@ -132,19 +132,11 @@ class GaussianModel:
     def create_from_pcd(self, pcd : BasicPointCloud, spatial_lr_scale : float):
         self.spatial_lr_scale = spatial_lr_scale
         
-        # N = 16279
         fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda() # * (N, 3)
         fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda()) # * (N, 3)
         features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda() # * (N, 3, 16=(max_sh_degree+1)^2)
         features[:, :3, 0 ] = fused_color
         features[:, 3:, 1:] = 0.0
-
-        print("Number of points at initialisation : ", fused_point_cloud.shape[0])
-        
-        # print shape
-        print("fused_point_cloud.shape: ", fused_point_cloud.shape)
-        print("fused_color.shape: ", fused_color.shape)
-        print("features.shape: ", features.shape)
 
         dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()), 0.0000001)
         scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 3) # * (N, 3)

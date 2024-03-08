@@ -15,6 +15,7 @@ import torch
 from utils.general_utils import PILtoTorch
 from utils.graphics_utils import fov2focal
 import tqdm
+import sys
 
 WARNED = False
 
@@ -55,16 +56,18 @@ def loadCam(args, id, cam_info, resolution_scale):
     if resized_image_rgb.shape[1] == 4:
         loaded_mask = resized_image_rgb[3:4, ...]
 
-    return Camera(colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T, 
-                  cam_phi=cam_info.cam_phi, cam_theta=cam_info.cam_theta, light_phi=cam_info.light_phi, light_theta=cam_info.light_theta,
+    return Camera(colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T,
+                  cam_id=cam_info.cam_id, light_id=cam_info.light_id,
                   FoVx=cam_info.FovX, FoVy=cam_info.FovY, 
                   image=gt_image, gt_alpha_mask=loaded_mask,
-                  image_name=cam_info.image_name, uid=id, data_device=args.data_device, extension = cam_info.extension)
+                  image_name=cam_info.image_name, uid=id, data_device=args.data_device)
 
 def cameraList_from_camInfos(cam_infos, resolution_scale, args):
     camera_list = []
 
-    for id, c in tqdm(enumerate(cam_infos), desc="Loading cameras", total=len(cam_infos)):
+    for id, c in enumerate(cam_infos):
+        sys.stdout.write('\r')
+        sys.stdout.write("Reading camera {}/{}".format(id, len(cam_infos)))
         camera_list.append(loadCam(args, id, c, resolution_scale))
 
     return camera_list
@@ -82,15 +85,13 @@ def camera_to_JSON(id, camera : Camera):
     
     camera_entry = {
         'id' : id,
+        'cam_id' : camera.cam_id,
+        'light_id' : camera.light_id,
         'img_name' : camera.image_name,
         'width' : camera.width,
         'height' : camera.height,
         'position': pos.tolist(),
         'rotation': serializable_array_2d,
-        'cam_phi' : camera.cam_phi,
-        'cam_theta' : camera.cam_theta,
-        'light_phi' : camera.light_phi,
-        'light_theta' : camera.light_theta,
         'fy' : fov2focal(camera.FovY, camera.height),
         'fx' : fov2focal(camera.FovX, camera.width)
     }

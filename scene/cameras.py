@@ -16,23 +16,20 @@ from utils.graphics_utils import getWorld2View2, getProjectionMatrix
 
 class Camera(nn.Module):
     def __init__(self, colmap_id, R, T, FoVx, FoVy, image, gt_alpha_mask,
-                 image_name, uid, cam_theta, cam_phi, light_theta, light_phi,
-                 trans=np.array([0.0, 0.0, 0.0]), scale=1.0, data_device = "cuda", extension = ".png"
+                 image_name, uid, cam_id, light_id,
+                 trans=np.array([0.0, 0.0, 0.0]), scale=1.0, data_device = "cuda"
                  ):
         super(Camera, self).__init__()
 
         self.uid = uid
         self.colmap_id = colmap_id
+        self.cam_id = cam_id
+        self.light_id = light_id
         self.R = R
         self.T = T
-        self.cam_theta = cam_theta
-        self.cam_phi = cam_phi
-        self.light_theta = light_theta
-        self.light_phi = light_phi
         self.FoVx = FoVx
         self.FoVy = FoVy
         self.image_name = image_name
-        self.extension = extension
 
         try:
             self.data_device = torch.device(data_device)
@@ -44,12 +41,14 @@ class Camera(nn.Module):
         # 设置data_device为cpu
         self.data_device = torch.device("cpu")
         
-        if extension == ".png":
-            self.original_image = image.clamp(0.0, 1.0).to(self.data_device)
-        elif extension == ".exr":
-            self.original_image = image.to(self.data_device)
-        else:
-            assert False, "Unknown image extension: {}".format(extension)
+        # if extension == ".png":
+        #     self.original_image = image.clamp(0.0, 1.0).to(self.data_device)
+        # elif extension == ".exr":
+        #     self.original_image = image.to(self.data_device)
+        # else:
+        #     assert False, "Unknown image extension: {}".format(extension)
+        
+        self.original_image = image.clamp(0.0, 1.0).to(self.data_device)
         
         self.image_width = self.original_image.shape[2]
         self.image_height = self.original_image.shape[1]
