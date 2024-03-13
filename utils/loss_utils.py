@@ -62,3 +62,8 @@ def _ssim(img1, img2, window, window_size, channel, size_average=True):
     else:
         return ssim_map.mean(1).mean(1).mean(1)
 
+def mask_loss(mask, gt_mask):
+    # image: (C, H, W)
+    # mask: (1, H, W)
+    # 计算mask之外的loss
+    return torch.abs(mask - gt_mask).mean()

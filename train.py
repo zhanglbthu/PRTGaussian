@@ -13,7 +13,7 @@ import os
 import torch
 # from torchvision.utils import save_image
 from random import randint
-from utils.loss_utils import l1_loss, ssim
+from utils.loss_utils import l1_loss, ssim, mask_loss
 from gaussian_renderer import render, network_gui
 import sys
 from scene import Scene, GaussianModel
@@ -39,14 +39,25 @@ import torchvision
 import json
 import tinycudann as tcnn
 
-def compute_diffuse_colors(light_coeffs, gaussians : GaussianModel, model, color_order, total_order):
+def compute_diffuse_colors(light_dir, 
+                           gaussians : GaussianModel, 
+                           model, 
+                           color_order, 
+                           total_order, 
+                           render_type="origin"):
+
+    if render_type == "origin":
+        return None
+    
+    light_coeffs = get_sh_coeffs(direction=light_dir, order=total_order)
 
     xyz = gaussians.get_xyz.clone().detach()
     
-    N = xyz.shape[0]
     if torch.cuda.is_available():
         xyz = xyz.to("cuda") # (N, 3)
         light_coeffs = light_coeffs.to("cuda")
+        
+    N = xyz.shape[0]
         
     trans_coeffs = model(xyz)
         
@@ -55,8 +66,15 @@ def compute_diffuse_colors(light_coeffs, gaussians : GaussianModel, model, color
     d = torch.cat((x_front, x_back), dim=2)
     
     diffuse_colors = (d * light_coeffs).sum(dim=2)
-    return diffuse_colors
     
+    return diffuse_colors
+
+def compute_mask_colors(gaussians : GaussianModel):
+    N = gaussians.get_xyz.shape[0]
+    mask_colors = torch.ones((N, 3), dtype=torch.float32, device="cuda")
+    
+    return mask_colors
+
 class TrainRunner():
     def __init__(self, **kwargs):
         
@@ -78,11 +96,19 @@ class TrainRunner():
         self.test_iterations = kwargs['test_iterations']
         self.save_iterations = kwargs['save_iterations']
         
-        self.resolution_scale = self.config.getfloat('Argument', 'resolution_scale')
-        self.num_pts = self.config.getint('Argument', 'num_pts')
-        self.lr = self.config.getfloat('Argument', 'lr')
-        self.color_order = self.config.getint('Argument', 'color_order')
-        self.total_order = self.config.getint('Argument', 'total_order')
+        self.render_type = self.config['Scene']['render_type']
+        self.resolution_scale = self.config.getfloat('Scene', 'resolution_scale')
+        self.num_pts = self.config.getint('Scene', 'num_pts')
+        self.radius = self.config.getfloat('Scene', 'radius')
+        self.white_bg = self.config.getboolean('Scene', 'white_bg')
+        
+        # optimize
+        self.lambda_mask = self.config.getfloat('Optimize', 'lambda_mask')
+        
+        # network
+        self.lr = self.config.getfloat('DiffuseNetwork', 'lr')
+        self.color_order = self.config.getint('DiffuseNetwork', 'color_order')
+        self.total_order = self.config.getint('DiffuseNetwork', 'total_order')
         
         self.dataset = kwargs['dataset']
         self.opt = kwargs['opt']
@@ -107,6 +133,14 @@ class TrainRunner():
         self.debug_path = os.path.join(self.model_path, 'debug')
         if not os.path.exists(self.debug_path):
             os.makedirs(self.debug_path)
+            
+        self.sh_map_path = os.path.join(self.debug_path, 'sh_map')
+        if not os.path.exists(self.sh_map_path):
+            os.makedirs(self.sh_map_path)
+        
+        self.render_path = os.path.join(self.debug_path, 'render')
+        if not os.path.exists(self.render_path):
+            os.makedirs(self.render_path)
             
     def _save_file(self):
         with open(os.path.join(self.model_path, 'config.ini'), 'w') as configfile:
@@ -147,13 +181,15 @@ class TrainRunner():
                       source_path=self.source_path,
                       data_type=self.data_type,
                       resolution_scale=self.resolution_scale,
-                      num_pts=self.num_pts)
+                      num_pts=self.num_pts,
+                      radius=self.radius,
+                      white_bg=self.white_bg)
         
         light_info = scene.getLightInfo()
         
         gaussians.training_setup(self.opt)
         
-        bg_color = [1, 1, 1] if self.dataset.white_background else [0, 0, 0]
+        bg_color = [1, 1, 1] if self.white_bg else [0, 0, 0]
         background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
         
         iter_start = torch.cuda.Event(enable_timing = True)
@@ -184,33 +220,38 @@ class TrainRunner():
                 
                 bg = torch.rand((3), device="cuda") if self.opt.random_background else background
                 
-                light_coeffs = get_sh_coeffs(direction=light_info[viewpoint_cam.light_id], order=self.total_order)
+                diffuse_colors = compute_diffuse_colors(light_info[viewpoint_cam.light_id] if light_info is not None else None,
+                                                        gaussians, 
+                                                        self.diffuse_decoder, 
+                                                        self.color_order, 
+                                                        self.total_order,
+                                                        self.render_type)
                 
-                diffuse_colors = compute_diffuse_colors(light_coeffs, gaussians, self.diffuse_decoder, self.color_order, self.total_order)
                 render_pkg = render(viewpoint_cam, gaussians, self.pipe, bg, override_color=diffuse_colors)
                 image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+
+                gt_image = viewpoint_cam.original_image # (3, H, W)
+                gt_mask = viewpoint_cam.mask # (1, H, W)
+                gt_mask = torch.cat((gt_mask, gt_mask, gt_mask), dim=0).to("cuda")
                 
-                if torch.sum(image) == 0:
-                    print("image is all 0")
-                    print("iteration: {}".format(iteration))
+                mask_colors = compute_mask_colors(gaussians)
+                mask = render(viewpoint_cam, gaussians, self.pipe, bg, override_color=mask_colors)["render"]
                 
                 if iteration % 1000 == 0:
-                    sh_map_path = os.path.join(self.debug_path, 'sh_map')
-                    if not os.path.exists(sh_map_path):
-                        os.makedirs(sh_map_path)
-                    render_path = os.path.join(self.debug_path, 'render')
-                    if not os.path.exists(render_path):
-                        os.makedirs(render_path)
-                        
-                    sh_map = get_pm_from_sh(light_coeffs, resolution=(128, 64), order=self.total_order)
-                    save_image(sh_map, os.path.join(sh_map_path, '{0:05d}'.format(iteration) + ".png"))
- 
-                    # left: gt, right: render
-                    save_image(torch.cat((viewpoint_cam.original_image[0:3, :, :].to("cuda"), image), 2), os.path.join(render_path, '{0:05d}'.format(iteration) + ".png"))
-
-                gt_image = viewpoint_cam.original_image.cuda()
+                    save_image(torch.cat((gt_image, image), 2), 
+                               os.path.join(self.render_path, '{0:05d}'.format(iteration) + ".png"))
+                    
+                    save_image(torch.cat((gt_mask, mask), 2),
+                               os.path.join(self.render_path, '{0:05d}'.format(iteration) + "_mask.png"))
+                
+                
                 Ll1 = l1_loss(image, gt_image)
-                loss = (1.0 - self.opt.lambda_dssim) * Ll1 + self.opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+                loss_mask = self.lambda_mask * mask_loss(mask, gt_mask)
+                
+                loss = (1.0 - self.opt.lambda_dssim) * Ll1 + \
+                        self.opt.lambda_dssim * (1.0 - ssim(image, gt_image)) + \
+                        loss_mask
+                
                 loss.backward()
                 
                 iter_end.record()
@@ -223,7 +264,7 @@ class TrainRunner():
                     if iteration == self.opt.iterations:
                         progress_bar.close()
                     
-                    self.training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), self.test_iterations, scene, (self.pipe, background), gaussians, light_info)
+                    self.training_report(tb_writer, iteration, Ll1, loss_mask, loss, l1_loss, iter_start.elapsed_time(iter_end), self.test_iterations, scene, (self.pipe, background), gaussians, light_info)
                     
                     if (iteration in self.save_iterations):
                         print("\n[ITER {}] Saving Gaussians".format(iteration))
@@ -244,8 +285,9 @@ class TrainRunner():
                         gaussians.optimizer.step()
                         gaussians.optimizer.zero_grad(set_to_none = True)
                         
-                        optimizer.step()
-                        optimizer.zero_grad(set_to_none = True)
+                        if self.render_type != "origin":
+                            optimizer.step()
+                            optimizer.zero_grad(set_to_none = True)
 
         self.render_set("train", self.opt.iterations, scene.getTrainCameras(), gaussians, self.pipe, background, light_info)
         self.render_set("test", self.opt.iterations, scene.getTestCameras(), gaussians, self.pipe, background, light_info)
@@ -272,10 +314,11 @@ class TrainRunner():
             print("Tensorboard not available: not logging progress")
         return tb_writer
 
-    def training_report(self, tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderArgs,
+    def training_report(self, tb_writer, iteration, Ll1, loss_mask, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderArgs,
                         gaussians : GaussianModel = None, light_info = None):
         if tb_writer:
             tb_writer.add_scalar('train_loss_patches/l1_loss', Ll1.item(), iteration)
+            tb_writer.add_scalar('train_loss_patches/mask_loss', loss_mask.item(), iteration)
             tb_writer.add_scalar('train_loss_patches/total_loss', loss.item(), iteration)
             tb_writer.add_scalar('iter_time', elapsed, iteration)
 
@@ -291,8 +334,13 @@ class TrainRunner():
                     psnr_test = 0.0
                     for idx, viewpoint in enumerate(config['cameras']):
                         
-                        light_coeffs = get_sh_coeffs(direction=light_info[viewpoint.light_id], order=self.total_order)
-                        diffuse_colors = compute_diffuse_colors(light_coeffs, gaussians, self.diffuse_decoder, self.color_order, self.total_order)
+                        diffuse_colors = compute_diffuse_colors(light_info[viewpoint.light_id] if light_info is not None else None,
+                                                                gaussians, 
+                                                                self.diffuse_decoder, 
+                                                                self.color_order, 
+                                                                self.total_order, 
+                                                                self.render_type)
+                        
                         image = render(viewpoint, gaussians, *renderArgs, override_color=diffuse_colors)["render"]
                         gt_image = viewpoint.original_image.to("cuda")
                         
@@ -324,9 +372,12 @@ class TrainRunner():
 
         for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
             
-            light_coeffs = get_sh_coeffs(direction=light_info[view.light_id], order=self.total_order)
-            
-            diffuse_colors = compute_diffuse_colors(light_coeffs, gaussians, self.diffuse_decoder, self.color_order, self.total_order)
+            diffuse_colors = compute_diffuse_colors(light_info[view.light_id] if light_info is not None else None,
+                                                    gaussians, 
+                                                    self.diffuse_decoder, 
+                                                    self.color_order, 
+                                                    self.total_order, 
+                                                    self.render_type)
             
             rendering = render(view, gaussians, pipeline, background, override_color=diffuse_colors)["render"]
             gt = view.original_image[0:3, :, :]

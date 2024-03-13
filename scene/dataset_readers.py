@@ -84,7 +84,6 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
         sys.stdout.write('\r')
         # the exact output you're looking for:
         sys.stdout.write("Reading camera {}/{}".format(idx+1, len(cam_extrinsics)))
-        sys.stdout.flush()
 
         extr = cam_extrinsics[key]
         intr = cam_intrinsics[extr.camera_id]
@@ -112,13 +111,14 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
         image = Image.open(image_path)
 
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
-                              image_path=image_path, image_name=image_name, width=width, height=height)
+                              image_path=image_path, image_name=image_name, width=width, height=height,
+                              cam_id='', light_id=0)
         cam_infos.append(cam_info)
     sys.stdout.write('\n')
     return cam_infos
 
-def randamPly(path, num_pts):
-    xyz = np.random.random((num_pts, 3)) * 2.6 - 1.3 # * (-1.3, 1.3)
+def randamPly(path, num_pts, radius = 0.1):
+    xyz = np.random.random((num_pts, 3)) * (2 * radius) - radius
     print(f"Generated {xyz.shape[0]} points")
     shs = np.random.random((num_pts, 3)) / 255.0
     pcd = BasicPointCloud(points=xyz, colors=SH2RGB(shs), normals=np.zeros((num_pts, 3)))
@@ -216,7 +216,6 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
 
         frames = contents["frames"]
         for idx, frame in tqdm(enumerate(frames)):
-            # 打印读取进度
             
             cam_name = os.path.join(path, frame["file_path"] + extension)
 
@@ -287,7 +286,7 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
             
     return cam_infos, light_angles    
 
-def readCamerasFromOpenIlluminations(path, cam_train, cam_test, resolution_scale):
+def readCamerasFromOpenIlluminations(path, cam_train, cam_test, resolution_scale, white_bg):
     train_cam_infos = []
     test_cam_infos = []
     
@@ -312,10 +311,10 @@ def readCamerasFromOpenIlluminations(path, cam_train, cam_test, resolution_scale
             # check if cam_id is in train or test
             if cam_id in cam_train:
                 cam_info = cam_train[cam_id]
-                train_cam_infos.append(initCamera(idx, cam_id, light_id, img_path, cam_info, resolution_scale))
+                train_cam_infos.append(initCamera(idx, cam_id, light_id, img_path, cam_info, resolution_scale, white_bg))
             else:
                 cam_info = cam_test[cam_id]
-                test_cam_infos.append(initCamera(idx, cam_id, light_id, img_path, cam_info, resolution_scale))
+                test_cam_infos.append(initCamera(idx, cam_id, light_id, img_path, cam_info, resolution_scale, white_bg))
             
     return train_cam_infos, test_cam_infos
 
@@ -373,16 +372,17 @@ def readCameraFromJson(json_path, resolution_scale):
         mask = Image.open(mask_path)
         resized_mask = mask.resize((int(mask.width / resolution_scale), int(mask.height / resolution_scale)))
         
-        mask_data = np.array(resized_mask.convert("RGB")) / 255.0
-        cam_data[cam]["mask"] = mask_data
+        mask_data = np.array(resized_mask.convert("L"))
+        cam_data[cam]["mask"] = mask_data[:, :, None]
     
     return cam_data
     
-def initCamera(idx, cam_id, light_id, img_path, cam_info, resolution_scale):
+def initCamera(idx, cam_id, light_id, img_path, cam_info, resolution_scale, white_bg=False):
     
-    c2w = cam_info["transform_matrix"]
+    c2w = np.array(cam_info["transform_matrix"])
     w2c = np.linalg.inv(c2w)
-    R = np.transpose(w2c[:3,:3])
+    
+    R = np.transpose(w2c[:3,:3]) 
     T = w2c[:3, 3]
     
     image_path = img_path
@@ -392,15 +392,16 @@ def initCamera(idx, cam_id, light_id, img_path, cam_info, resolution_scale):
     resized_image = image.resize((int(image.width / resolution_scale), int(image.height / resolution_scale)))
     img_data = np.array(resized_image.convert("RGB"))
     
-    norm_data = img_data / 255.0
-    bg = np.array([0., 0., 0.])
-    
     mask_data = cam_info["mask"]
+    
+    if mask_data.max() == 1:
+        mask_data = mask_data * 255
     
     assert mask_data.shape[0] == img_data.shape[0] 
     
-    arr = norm_data[:,:,:3] * mask_data + bg * (1 - mask_data)
-    image = Image.fromarray(np.array(arr*255.0, dtype=np.byte), "RGB") # * (H, W, 3)
+    image = np.concatenate([img_data, mask_data], axis=-1)
+    
+    image = Image.fromarray(image, "RGBA")
     
     size = image.size
     
@@ -412,15 +413,13 @@ def initCamera(idx, cam_id, light_id, img_path, cam_info, resolution_scale):
     return CameraInfo(uid=idx, cam_id=cam_id, light_id=int(light_id), R=R, T=T, FovY=FovY, FovX=FovX, image=image,
                       image_path=image_path, image_name=image_name, width=size[0], height=size[1])
 
-def readOpenIlluminationInfo(source_path, num_pts, resolution_scale, eval):
+def readOpenIlluminationInfo(source_path, num_pts, resolution_scale, eval, radius, white_bg):
     
     # init points
     ply_path = os.path.join(source_path, "points3d.ply")
-    if not os.path.exists(ply_path):
-        pcd = randamPly(ply_path, num_pts)
-    else:
-        pcd = fetchPly(ply_path)
     
+    pcd = randamPly(ply_path, num_pts, radius=radius)
+
     # read light pos
     light_pos_path = os.path.join(os.path.dirname(source_path), "light_pos.npy")
     light_pos = np.load(light_pos_path)
@@ -434,7 +433,7 @@ def readOpenIlluminationInfo(source_path, num_pts, resolution_scale, eval):
 
     print(f"Train: {len(cam_train_data)}, Test: {len(cam_test_data)}")
     
-    cam_infos = readCamerasFromOpenIlluminations(source_path, cam_train_data, cam_test_data, resolution_scale)
+    cam_infos = readCamerasFromOpenIlluminations(source_path, cam_train_data, cam_test_data, resolution_scale, white_bg)    
     
     if eval:
         train_cam_infos = cam_infos[0]

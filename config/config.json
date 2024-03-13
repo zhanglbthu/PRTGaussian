@@ -10,10 +10,14 @@
 		"epsilon": 1e-8,
 		"l2_reg": 1e-8
 	},
-    "encoding": {
-        "otype": "Frequency",
-		"n_frequencies": 12
-    },
+	"encoding": {
+		"otype": "HashGrid",
+		"n_levels": 16,
+		"n_features_per_level": 2,
+		"log2_hashmap_size": 15,
+		"base_resolution": 16,
+		"per_level_scale": 1.5
+	},
 	"network": {
 		"otype": "FullyFusedMLP",
 		"activation": "ReLU",

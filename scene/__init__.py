@@ -34,7 +34,9 @@ class Scene:
                  model_path="None", 
                  source_path="None",
                  data_type="OpenIllumination",
-                 num_pts=100000):
+                 num_pts=100000,
+                 radius=1.0,
+                 white_bg=False):
         
         """
         :param path: Path to colmap scene main folder.
@@ -56,6 +58,7 @@ class Scene:
 
         # change source path
         if os.path.exists(os.path.join(source_path, "sparse")):
+            print("Found sparse folder, assuming Colmap data set!")
             scene_info = sceneLoadTypeCallbacks["Colmap"](source_path, "images", args.eval)
             
         elif os.path.exists(os.path.join(source_path, "transforms_train.json")):
@@ -64,7 +67,12 @@ class Scene:
         
         elif data_type == "OpenIllumination":
             print("Found OpenIllumination data set!")
-            scene_info = sceneLoadTypeCallbacks["OpenIllumination"](source_path, num_pts, resolution_scale, args.eval)
+            scene_info = sceneLoadTypeCallbacks["OpenIllumination"](source_path, 
+                                                                    num_pts, 
+                                                                    resolution_scale, 
+                                                                    args.eval, 
+                                                                    radius,
+                                                                    white_bg)
         
         else:
             assert False, "Could not recognize scene type!"
@@ -122,4 +130,4 @@ class Scene:
         return self.test_cameras[scale]
     
     def getLightInfo(self):
-        return self.light_info
+        return self.light_info if hasattr(self, 'light_info') else None
