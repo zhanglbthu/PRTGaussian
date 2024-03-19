@@ -36,7 +36,8 @@ class Scene:
                  data_type="OpenIllumination",
                  num_pts=100000,
                  radius=1.0,
-                 white_bg=False):
+                 white_bg=False,
+                 light_type='OLAT'):
         
         """
         :param path: Path to colmap scene main folder.
@@ -63,7 +64,10 @@ class Scene:
             
         elif os.path.exists(os.path.join(source_path, "transforms_train.json")):
             print("Found transforms_train.json file, assuming Blender data set!")
-            scene_info = sceneLoadTypeCallbacks["Blender"](source_path, args.white_background, args.eval)
+            scene_info = sceneLoadTypeCallbacks["Blender"](source_path,
+                                                           num_pts,
+                                                           args.eval,
+                                                           radius)
         
         elif data_type == "OpenIllumination":
             print("Found OpenIllumination data set!")
@@ -72,7 +76,8 @@ class Scene:
                                                                     resolution_scale, 
                                                                     args.eval, 
                                                                     radius,
-                                                                    white_bg)
+                                                                    white_bg,
+                                                                    light_type)
         
         else:
             assert False, "Could not recognize scene type!"

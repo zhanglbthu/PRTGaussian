@@ -41,7 +41,8 @@ class Camera(nn.Module):
         # # 设置data_device为cpu
         self.data_device = torch.device("cuda")
         
-        self.original_image = image.clamp(0.0, 1.0).to(self.data_device)
+        # self.original_image = image.clamp(0.0, 1.0).to(self.data_device)
+        self.original_image = image.to(self.data_device)
         
         self.image_width = self.original_image.shape[2]
         self.image_height = self.original_image.shape[1]

@@ -39,25 +39,31 @@ import torchvision
 import json
 import tinycudann as tcnn
 
-def compute_diffuse_colors(light_dir, 
+def compute_diffuse_colors(light, 
                            gaussians : GaussianModel, 
                            model, 
                            color_order, 
                            total_order, 
-                           render_type="origin"):
+                           render_type="origin",
+                           data_type="NeRF"):
 
     if render_type == "origin":
         return None
     
-    light_coeffs = get_sh_coeffs(direction=light_dir, order=total_order)
-
+    if data_type == "NeRF":
+        light_coeffs = light
+    elif data_type == "OpenIllumination": 
+        if light.shape[0] == 3:
+            light_coeffs = light.unsqueeze(0)
+        else:
+            light_coeffs = get_sh_coeffs(direction=light, order=total_order)
+    
     xyz = gaussians.get_xyz.clone().detach()
+    N = xyz.shape[0]
     
     if torch.cuda.is_available():
         xyz = xyz.to("cuda") # (N, 3)
         light_coeffs = light_coeffs.to("cuda")
-        
-    N = xyz.shape[0]
         
     trans_coeffs = model(xyz)
         
@@ -74,6 +80,12 @@ def compute_mask_colors(gaussians : GaussianModel):
     mask_colors = torch.ones((N, 3), dtype=torch.float32, device="cuda")
     
     return mask_colors
+
+def compute_random_colors(gaussians : GaussianModel):
+    N = gaussians.get_xyz.shape[0]
+    random_colors = torch.rand((N, 3), dtype=torch.float32, device="cuda")
+    
+    return random_colors
 
 class TrainRunner():
     def __init__(self, **kwargs):
@@ -95,12 +107,14 @@ class TrainRunner():
         self.debug_from = kwargs['debug_from']
         self.test_iterations = kwargs['test_iterations']
         self.save_iterations = kwargs['save_iterations']
+        self.checkpoint_iterations = kwargs['checkpoint_iterations']
         
         self.render_type = self.config['Scene']['render_type']
         self.resolution_scale = self.config.getfloat('Scene', 'resolution_scale')
         self.num_pts = self.config.getint('Scene', 'num_pts')
         self.radius = self.config.getfloat('Scene', 'radius')
         self.white_bg = self.config.getboolean('Scene', 'white_bg')
+        self.light_type = self.config['Scene']['light_type']
         
         # optimize
         self.lambda_mask = self.config.getfloat('Optimize', 'lambda_mask')
@@ -142,6 +156,10 @@ class TrainRunner():
         if not os.path.exists(self.render_path):
             os.makedirs(self.render_path)
             
+        self.ckpt_path = os.path.join(self.model_path, 'ckpt')
+        if not os.path.exists(self.ckpt_path):
+            os.makedirs(self.ckpt_path)
+            
     def _save_file(self):
         with open(os.path.join(self.model_path, 'config.ini'), 'w') as configfile:
             self.config.write(configfile)
@@ -165,7 +183,7 @@ class TrainRunner():
         dc_dim = 3 * color_order ** 2
         dm_dim = 1 * (total_order ** 2 - color_order ** 2)
         output_dim = dc_dim + dm_dim
-        
+        print("output_dim: ", output_dim)
         model = tcnn.NetworkWithInputEncoding(n_input_dims=input_dim, n_output_dims=output_dim, encoding_config=diffuse_config["encoding"], network_config=diffuse_config["network"]).to("cuda")
         return model
 
@@ -183,7 +201,8 @@ class TrainRunner():
                       resolution_scale=self.resolution_scale,
                       num_pts=self.num_pts,
                       radius=self.radius,
-                      white_bg=self.white_bg)
+                      white_bg=self.white_bg,
+                      light_type=self.light_type)
         
         light_info = scene.getLightInfo()
         
@@ -225,20 +244,29 @@ class TrainRunner():
                                                         self.diffuse_decoder, 
                                                         self.color_order, 
                                                         self.total_order,
-                                                        self.render_type)
+                                                        self.render_type,
+                                                        self.data_type)
+                
+                gt_image = viewpoint_cam.original_image.to("cuda")
+                gt_mask = viewpoint_cam.mask.to("cuda")
+                
+                gt_mask = torch.cat((gt_mask, gt_mask, gt_mask), dim=0)
+                
+                # 计算gt_image的每个通道的最小值
+                C = torch.abs(gt_image.min())
+                gt_image = gt_image + C * gt_mask
+                
+                # diffuse_colors的每个通道都+1.5
+                diffuse_colors = diffuse_colors + C
                 
                 render_pkg = render(viewpoint_cam, gaussians, self.pipe, bg, override_color=diffuse_colors)
                 image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
-
-                gt_image = viewpoint_cam.original_image # (3, H, W)
-                gt_mask = viewpoint_cam.mask # (1, H, W)
-                gt_mask = torch.cat((gt_mask, gt_mask, gt_mask), dim=0).to("cuda")
                 
-                mask_colors = compute_mask_colors(gaussians)
-                mask = render(viewpoint_cam, gaussians, self.pipe, bg, override_color=mask_colors)["render"]
+                mask_colors = compute_random_colors(gaussians)
+                mask = render(viewpoint_cam, gaussians, self.pipe, bg, override_color=mask_colors, override_opacity=True)["render"]
                 
                 if iteration % 1000 == 0:
-                    save_image(torch.cat((gt_image, image), 2), 
+                    save_image(torch.cat((gt_image.clip(0, 1) ** (1/2.2), image.clip(0, 1) ** (1/2.2)), 2) if self.data_type == "NeRF" else torch.cat((gt_image, image), 2),
                                os.path.join(self.render_path, '{0:05d}'.format(iteration) + ".png"))
                     
                     save_image(torch.cat((gt_mask, mask), 2),
@@ -248,9 +276,9 @@ class TrainRunner():
                 Ll1 = l1_loss(image, gt_image)
                 loss_mask = self.lambda_mask * mask_loss(mask, gt_mask)
                 
-                loss = (1.0 - self.opt.lambda_dssim) * Ll1 + \
-                        self.opt.lambda_dssim * (1.0 - ssim(image, gt_image)) + \
-                        loss_mask
+                loss = (1.0 - self.opt.lambda_dssim) * Ll1 
+                # self.opt.lambda_dssim * (1.0 - ssim(image, gt_image)) 
+                # loss_mask
                 
                 loss.backward()
                 
@@ -288,6 +316,16 @@ class TrainRunner():
                         if self.render_type != "origin":
                             optimizer.step()
                             optimizer.zero_grad(set_to_none = True)
+                    
+                    if iteration in self.checkpoint_iterations:
+                        print("\n[ITER {}] Saving Checkpoint".format(iteration))
+                        gaussians_ckpt_folder = os.path.join(self.ckpt_path, "iteration_{}".format(iteration))
+                        os.makedirs(gaussians_ckpt_folder, exist_ok = True)
+                        torch.save((gaussians.capture(), iteration), os.path.join(gaussians_ckpt_folder, "gaussians.pth"))
+                        
+                        diffuse_decoder_ckpt_folder = os.path.join(self.ckpt_path, "iteration_{}".format(iteration))
+                        os.makedirs(diffuse_decoder_ckpt_folder, exist_ok = True)
+                        torch.save(self.diffuse_decoder.state_dict(), os.path.join(diffuse_decoder_ckpt_folder, "diffuse_decoder.pth"))
 
         self.render_set("train", self.opt.iterations, scene.getTrainCameras(), gaussians, self.pipe, background, light_info)
         self.render_set("test", self.opt.iterations, scene.getTestCameras(), gaussians, self.pipe, background, light_info)
@@ -344,12 +382,21 @@ class TrainRunner():
                         image = render(viewpoint, gaussians, *renderArgs, override_color=diffuse_colors)["render"]
                         gt_image = viewpoint.original_image.to("cuda")
                         
+                        l1_test += l1_loss(image, gt_image).mean().double()
+                        psnr_test += psnr(image, gt_image).mean().double()
+                        
+                        if self.data_type == "NeRF":
+                            # correct gamma
+                            image = image.clip(0, 1) ** (1/2.2)
+                            gt_image = gt_image.clip(0, 1) ** (1/2.2)
+                        
                         if tb_writer and (idx < 5):
                             tb_writer.add_images(config['name'] + "_view_{}/render".format(viewpoint.image_name), image[None], global_step=iteration)
                             if iteration == testing_iterations[0]:
                                 tb_writer.add_images(config['name'] + "_view_{}/ground_truth".format(viewpoint.image_name), gt_image[None], global_step=iteration)
-                        l1_test += l1_loss(image, gt_image).mean().double()
-                        psnr_test += psnr(image, gt_image).mean().double()
+                        
+
+                        
                     psnr_test /= len(config['cameras'])
                     l1_test /= len(config['cameras'])          
                     print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
@@ -382,6 +429,10 @@ class TrainRunner():
             rendering = render(view, gaussians, pipeline, background, override_color=diffuse_colors)["render"]
             gt = view.original_image[0:3, :, :]
             
+            if self.data_type == "NeRF":
+                rendering = rendering.clip(0, 1) ** (1/2.2)
+                gt = gt.clip(0, 1) ** (1/2.2)
+            
             torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
             torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
 
@@ -393,10 +444,10 @@ if __name__ == "__main__":
     pp = PipelineParams(parser)
     parser.add_argument('--debug_from', type=int, default=-1)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
-    parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 30_000])
+    parser.add_argument("--test_iterations", nargs="+", type=int, default=[1_000, 3_000, 7_000, 15_000, 30_000])
     parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 30_000])
     parser.add_argument("--quiet", action="store_true")
-    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
+    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[7_000, 30_000])
     parser.add_argument("--start_checkpoint", type=str, default = None)
     parser.add_argument("--config", type=str, required=True, default=None) # change
     
@@ -412,6 +463,7 @@ if __name__ == "__main__":
                             debug_from = args.debug_from,
                             test_iterations = args.test_iterations,
                             save_iterations = args.save_iterations,
+                            checkpoint_iterations = args.checkpoint_iterations,
                             dataset = lp.extract(args),
                             opt = op.extract(args),
                             pipe = pp.extract(args))

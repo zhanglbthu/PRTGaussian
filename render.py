@@ -1,75 +1,167 @@
-#
-# Copyright (C) 2023, Inria
-# GRAPHDECO research group, https://team.inria.fr/graphdeco
-# All rights reserved.
-#
-# This software is free for non-commercial, research and evaluation use 
-# under the terms of the LICENSE.md file.
-#
-# For inquiries contact  george.drettakis@inria.fr
-#
-
 import torch
-import sys
-from scene import Scene, GaussianModel
+from scene import Scene
 import os
 from tqdm import tqdm
 from os import makedirs
 from gaussian_renderer import render
 import torchvision
 from utils.general_utils import safe_state
+from utils.system_utils import searchForMaxIteration
 from argparse import ArgumentParser
 from arguments import ModelParams, PipelineParams, get_combined_args
-from my_utils.envmap import create_env_map
-from my_utils.pm2sh_v2 import pm2sh
+from gaussian_renderer import GaussianModel
+from my_utils.sh.pm2sh_v2 import get_sh_coeffs
+import configparser
+import sys
+import json
+import tinycudann as tcnn
 
-def render_set(model_path, name, iteration, views, gaussians, pipeline, background):
-    render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
-    gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
+def compute_diffuse_colors(light, 
+                           gaussians : GaussianModel, 
+                           model, 
+                           color_order=9, 
+                           total_order=9, 
+                           render_type="not_origin",
+                           data_type="NeRF"):
+
+    if render_type == "origin":
+        return None
+    
+    if data_type == "NeRF":
+        light_coeffs = light
+    elif data_type == "OpenIllumination": 
+        if light.shape[0] == 3:
+            light_coeffs = light.unsqueeze(0)
+        else:
+            light_coeffs = get_sh_coeffs(direction=light, order=total_order)
+    
+    xyz = gaussians.get_xyz.clone().detach()
+    N = xyz.shape[0]
+    
+    if torch.cuda.is_available():
+        xyz = xyz.to("cuda") # (N, 3)
+        light_coeffs = light_coeffs.to("cuda")
+        
+    trans_coeffs = model(xyz)
+        
+    x_front = trans_coeffs[:, :3*color_order**2] . view(N, 3, color_order**2)
+    x_back = trans_coeffs[:, 3*color_order**2:] . repeat(1, 3).view(N, 3, total_order**2 - color_order**2)
+    d = torch.cat((x_front, x_back), dim=2)
+    
+    diffuse_colors = (d * light_coeffs).sum(dim=2)
+    
+    return diffuse_colors
+
+def render_set(source_path, 
+               name, 
+               iteration, 
+               views, 
+               gaussians,
+               diffuse_network,
+               light,
+               pipeline, 
+               background):
+    
+    render_path = os.path.join(source_path, name, "ours_{}".format(iteration), "renders")
+    gts_path = os.path.join(source_path, name, "ours_{}".format(iteration), "gt")
 
     makedirs(render_path, exist_ok=True)
     makedirs(gts_path, exist_ok=True)
 
     for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
         
-        envmap = create_env_map(theta=view.light_theta, phi=view.light_phi)
-        light_coeffs, _ = pm2sh(envmap, order=9)
-        
-        diffuse_colors = gaussians.precompute_diffuse_colors(light_coeffs)
+        diffuse_colors = compute_diffuse_colors(light[view.light_id],
+                                                gaussians,
+                                                diffuse_network)
         
         rendering = render(view, gaussians, pipeline, background, override_color=diffuse_colors)["render"]
         gt = view.original_image[0:3, :, :]
-        torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
-        torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
+        torchvision.utils.save_image(rendering ** (1/2.2), os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
+        torchvision.utils.save_image(gt ** (1/2.2), os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
 
-def render_sets(dataset, iteration, pipeline, skip_train, skip_test):
+def render_sets(dataset : ModelParams, 
+                iteration : int, 
+                pipeline : PipelineParams, 
+                model_path : str,
+                source_path : str,
+                diffuse_network : tcnn.NetworkWithInputEncoding,
+                light : torch.Tensor):
+    
     with torch.no_grad():
         gaussians = GaussianModel(dataset.sh_degree)
- 
-        scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)
+        scene = Scene(args=dataset, 
+                      gaussians=gaussians,
+                      load_iteration=iteration, 
+                      shuffle=False, 
+                      model_path=model_path, 
+                      source_path=source_path)
 
         bg_color = [1,1,1] if dataset.white_background else [0, 0, 0]
         background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
-        if not skip_train:
-             render_set(dataset.model_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipeline, background)
+        render_set(source_path, 
+                   "train", 
+                   scene.loaded_iter, 
+                   scene.getTrainCameras(), 
+                   gaussians,
+                   diffuse_network,
+                   light,
+                   pipeline, 
+                   background)
 
-        if not skip_test:
-             render_set(dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), gaussians, pipeline, background)
+        render_set(source_path, 
+                   "test", 
+                   scene.loaded_iter, 
+                   scene.getTestCameras(), 
+                   gaussians,
+                   diffuse_network,
+                   light,
+                   pipeline, 
+                   background)
 
 if __name__ == "__main__":
     # Set up command line argument parser
     parser = ArgumentParser(description="Testing script parameters")
-    model = ModelParams(parser, sentinel=True)
+    model = ModelParams(parser)
     pipeline = PipelineParams(parser)
     parser.add_argument("--iteration", default=-1, type=int)
-    parser.add_argument("--skip_train", action="store_true")
-    parser.add_argument("--skip_test", action="store_true")
     parser.add_argument("--quiet", action="store_true")
-    args = get_combined_args(parser)
-    print("Rendering " + args.model_path)
+    parser.add_argument("--config", type=str, required=True, default=None) # change
+    
+    args = parser.parse_args(sys.argv[1:])
 
     # Initialize system state (RNG)
     safe_state(args.quiet)
+    
+    config = configparser.ConfigParser()
+    config.read(args.config)
+    
+    source_path = config["Path"]["source_path"]
+    model_path = config["Path"]["model_path"]
+    light_path = config["Path"]["light_path"]
+    ckpt_path = os.path.join(model_path, "ckpt")
+    
+    input_dim = config.getint("DiffuseNetwork", "input_dim")
+    output_dim = config.getint("DiffuseNetwork", "output_dim")
+    config_path = config["DiffuseNetwork"]["config_path"]
 
-    render_sets(model.extract(args), args.iteration, pipeline.extract(args), args.skip_train, args.skip_test)
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+    
+    load_iteration = searchForMaxIteration(ckpt_path)
+    dn_ckpt = os.path.join(ckpt_path, "iteration_{}".format(load_iteration), "diffuse_decoder.pth")
+    diffuse_network = tcnn.NetworkWithInputEncoding(n_input_dims=input_dim, 
+                                                    n_output_dims=output_dim, 
+                                                    encoding_config=config["encoding"],
+                                                    network_config=config["network"])
+    
+    diffuse_network.load_state_dict(torch.load(dn_ckpt))
+    light = torch.load(light_path)
+    
+    render_sets(model.extract(args), 
+                args.iteration, 
+                pipeline.extract(args), 
+                model_path,
+                source_path,
+                diffuse_network,
+                light)

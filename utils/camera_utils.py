@@ -48,7 +48,11 @@ def loadCam(args, id, cam_info, resolution_scale):
     # else:
     #     assert False, "Unknown image extension: {}".format(cam_info.extension)
     
-    resized_image_rgb = PILtoTorch(cam_info.image, resolution)
+    # 判断image的类型是否是ndarray
+    if isinstance(cam_info.image, np.ndarray):
+        resized_image_rgb = torch.from_numpy(cam_info.image).permute(2, 0, 1)
+    else:
+        resized_image_rgb = PILtoTorch(cam_info.image, resolution)
 
     gt_image = resized_image_rgb[:3, ...]
     loaded_mask = None

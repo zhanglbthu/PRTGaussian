@@ -35,10 +35,8 @@ def associated_legendre_polynomial(l, m, x):
         pmmp1 = pll
     return pll
 
-
 def normlizeSH(l, m):
     return math.sqrt((2.0 * l + 1.0) * math.factorial(l - m) / (4 * math.pi * math.factorial(l + m)))
-
 
 def SH(l, m, theta, phi):
     if m == 0:
@@ -92,7 +90,7 @@ def get_pm_from_sh(coeffs, resolution=[32, 16], order=3):
             sh_basis.append(SH(l, m, theta, phi))
     sh_basis = torch.stack(sh_basis, dim=-1)  # [h,w,n]
 
-    coeffs_ = coeffs[:, None, None, :]  # [b,1,1,n]
+    coeffs_ = coeffs[:, None, None, :] # [b,1,1,n]
     pm = torch.sum(coeffs_ * sh_basis, dim=-1)
 
     return pm

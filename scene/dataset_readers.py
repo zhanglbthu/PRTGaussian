@@ -31,6 +31,7 @@ import Imath
 
 from tqdm import tqdm
 from my_utils.math_utils import compute_angles, compute_angle
+import torch
 
 class CameraInfo(NamedTuple):
     uid: int
@@ -206,19 +207,36 @@ def readColmapSceneInfo(path, images, eval, llffhold=8):
                            ply_path=ply_path)
     return scene_info
 
-def readCamerasFromTransforms(path, transformsfile, white_background, extension=".png"):
+def readEXRImage(image_path):
+    file = OpenEXR.InputFile(image_path)
+    dw = file.header()['dataWindow']
+    size = (dw.max.x - dw.min.x + 1, dw.max.y - dw.min.y + 1)
+    pt = Imath.PixelType(Imath.PixelType.FLOAT)
+    (r, g, b, a) = [np.frombuffer(file.channel(Chan, pt), dtype=np.float32) for Chan in ("R", "G", "B", "A")]
+    r.shape = g.shape = b.shape = a.shape = (size[1], size[0]) # 从(w, h)转换为(h, w)
+    image = np.stack([r, g, b, a], axis=-1)
+    return image, size
+
+def readCamerasFromTransforms(path, transformsfile):
     cam_infos = []
-    translations = []
-    light_angles = []
+    
     with open(os.path.join(path, transformsfile)) as json_file:
         contents = json.load(json_file)
         fovx = contents["camera_angle_x"]
 
         frames = contents["frames"]
+        
+        tmp_path = os.path.join(path, frames[0]["file_path"] + '.exr')
+        tmp_image, _ = readEXRImage(tmp_path)
+        shift_image = np.zeros((tmp_image.shape))
+        
         for idx, frame in tqdm(enumerate(frames)):
             
-            cam_name = os.path.join(path, frame["file_path"] + extension)
-
+            image_path = os.path.join(path, frame["file_path"] + '.exr')
+            image_name = Path(image_path).stem
+            if frame["light_idx"] == 0:
+                shift_image, _ = readEXRImage(image_path)   
+            
             # NeRF 'transform_matrix' is a camera-to-world transform
             c2w = np.array(frame["transform_matrix"])
             # change from OpenGL/Blender camera axes (Y up, Z back) to COLMAP (Y down, Z forward)
@@ -229,64 +247,22 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
             R = np.transpose(w2c[:3,:3])  # R is stored transposed due to 'glm' in CUDA code
             T = w2c[:3, 3]
             
-            cam_direction = c2w[:3, 3]
+            image, size = readEXRImage(image_path)
             
-            # * 计算俯仰角和方位角
-            cam_phi, cam_theta = compute_angle(cam_direction)
-            
-            c2w_light = np.array(frame["transform_matrix_sun"])
-            # change from OpenGL/Blender camera axes (Y up, Z back) to COLMAP (Y down, Z forward)
-            c2w_light[:3, 1:3] *= -1
-            
-            light_direction = c2w_light[:3, 3]
-            translations.append(light_direction)
-            light_phi, light_theta = compute_angle(light_direction)
-            
-            light_angles.append([light_phi, light_theta])
-            
-            image_path = os.path.join(path, cam_name)
-            image_name = Path(cam_name).stem
-            
-            if extension == ".png":
-                image = Image.open(image_path)
-
-                im_data = np.array(image.convert("RGBA"))
-
-                bg = np.array([1,1,1]) if white_background else np.array([0, 0, 0])
-
-                norm_data = im_data / 255.0
-                arr = norm_data[:,:,:3] * norm_data[:, :, 3:4] + bg * (1 - norm_data[:, :, 3:4])
-                image = Image.fromarray(np.array(arr*255.0, dtype=np.byte), "RGB") # * (H, W, 3)
-
-                size = image.size
-            
-            elif extension == ".exr":
-                file = OpenEXR.InputFile(image_path)
-                
-                dw = file.header()['dataWindow']
-                size = (dw.max.x - dw.min.x + 1, dw.max.y - dw.min.y + 1)
-                
-                # 读取RGB颜色，不需要限制在0-1之间
-                pt = Imath.PixelType(Imath.PixelType.FLOAT)
-                (r, g, b) = [np.frombuffer(file.channel(Chan, pt), dtype=np.float32) for Chan in ("R", "G", "B")]
-                
-                r.shape = g.shape = b.shape = (size[1], size[0])
-                image = np.stack([r, g, b], axis=-1) # * (H, W, 3)
-            
-            else:
-                assert False, "Unsupported image extension: {}".format(extension)
+            image[:, :, :3] = image[:, :, :3] - 4 / 5 * shift_image[:, :, :3]
             
             fovy = focal2fov(fov2focal(fovx, size[0]), size[1])
             FovY = fovy 
             FovX = fovx
 
-            cam_infos.append(CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
-                            cam_phi=cam_phi, cam_theta=cam_theta, light_phi=light_phi, light_theta=light_theta,
-                            image_path=image_path, image_name=image_name, extension=extension, width=size[0], height=size[1]))
+            if frame["light_idx"] == 1:
+                cam_infos.append(CameraInfo(uid=idx, cam_id="", light_id=frame["light_idx"],
+                                            R=R, T=T, FovY=FovY, FovX=FovX, image=image,
+                                            image_path=image_path, image_name=image_name, width=size[0], height=size[1]))
             
-    return cam_infos, light_angles    
+    return cam_infos   
 
-def readCamerasFromOpenIlluminations(path, cam_train, cam_test, resolution_scale, white_bg):
+def readCamerasFromOpenIlluminations(path, cam_train, cam_test, resolution_scale, white_bg, light_type):
     train_cam_infos = []
     test_cam_infos = []
     
@@ -309,35 +285,44 @@ def readCamerasFromOpenIlluminations(path, cam_train, cam_test, resolution_scale
             img_path = os.path.join(cam_folder, image)
             
             # check if cam_id is in train or test
-            if cam_id in cam_train:
-                cam_info = cam_train[cam_id]
+            if light_id == "001" \
+                or light_id == "003" \
+                or light_id == "004" \
+                or light_id == "005" \
+                or light_id == "006" \
+                or light_id == "007" \
+                or light_id == "009" \
+                or light_id == "010" \
+                or light_id == "012" \
+                or light_id == "013":
+                cam_info = cam_train[cam_id] if cam_id in cam_train else cam_test[cam_id]
                 train_cam_infos.append(initCamera(idx, cam_id, light_id, img_path, cam_info, resolution_scale, white_bg))
             else:
-                cam_info = cam_test[cam_id]
+                cam_info = cam_test[cam_id] if cam_id in cam_test else cam_train[cam_id]
                 test_cam_infos.append(initCamera(idx, cam_id, light_id, img_path, cam_info, resolution_scale, white_bg))
             
     return train_cam_infos, test_cam_infos
 
-def readNerfSyntheticInfo(path, white_background, eval, extension=".png", llffhold=8):
+def loadShLightCoeffs(N = 81):
+
+    basic_coeffs = torch.zeros(1, N)
+    # basic_coeffs[0, 0] = 4
+    coeffs_list = []
+    for i in range(N):
+        light_coeffs = basic_coeffs.clone()
+        light_coeffs[0, i] += 1
+        coeffs_list.append(light_coeffs.repeat(3, 1).unsqueeze(0))
+    
+    final_coeffs = torch.cat(coeffs_list, dim=0)
+    assert final_coeffs.shape == (N, 3, N)
+    return final_coeffs
+
+def readNerfSyntheticInfo(path, num_pts, eval, radius, llffhold=8):
     print("Reading Training Transforms")
-    cam_infos, light_angles = readCamerasFromTransforms(path, "transforms_train.json", white_background, extension)
+    cam_infos = readCamerasFromTransforms(path, "transforms_train.json")
+    light_nums = cam_infos[-1].light_id + 1
     
-    radius = 1
-    points = []
-    for phi, theta in light_angles:
-        x = radius * np.sin(theta) * np.cos(phi)
-        y = radius * np.sin(theta) * np.sin(phi)
-        z = radius * np.cos(theta)
-        points.append([x, y, z])
-    
-    fig = plt.figure()
-    ax = fig.add_subplot(111, projection='3d')
-    points = np.array(points)
-    xs, ys, zs = zip(*points)
-    ax.scatter(xs, ys, zs)
-    # 保存图片
-    plt.savefig(os.path.join(path, "angles.png"))
-    print("Saved angles.png")
+    light_info = loadShLightCoeffs()
     
     if eval:
         train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 0]
@@ -350,14 +335,14 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png", llffho
 
     ply_path = os.path.join(path, "points3d.ply")
         
-    num_pts = 100_000 # change
-    pcd = randamPly(ply_path, num_pts)
+    pcd = randamPly(ply_path, num_pts, radius=radius)
 
     scene_info = SceneInfo(point_cloud=pcd,
                            train_cameras=train_cam_infos,
                            test_cameras=test_cam_infos,
                            nerf_normalization=nerf_normalization,
-                           ply_path=ply_path)
+                           ply_path=ply_path,
+                           light_info=light_info)
     return scene_info
 
 def readCameraFromJson(json_path, resolution_scale):
@@ -410,10 +395,10 @@ def initCamera(idx, cam_id, light_id, img_path, cam_info, resolution_scale, whit
     FovY = fovy
     FovX = fovx
     
-    return CameraInfo(uid=idx, cam_id=cam_id, light_id=int(light_id), R=R, T=T, FovY=FovY, FovX=FovX, image=image,
+    return CameraInfo(uid=idx, cam_id=cam_id, light_id=int(light_id)-1, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
                       image_path=image_path, image_name=image_name, width=size[0], height=size[1])
 
-def readOpenIlluminationInfo(source_path, num_pts, resolution_scale, eval, radius, white_bg):
+def readOpenIlluminationInfo(source_path, num_pts, resolution_scale, eval, radius, white_bg, light_type):
     
     # init points
     ply_path = os.path.join(source_path, "points3d.ply")
@@ -421,9 +406,13 @@ def readOpenIlluminationInfo(source_path, num_pts, resolution_scale, eval, radiu
     pcd = randamPly(ply_path, num_pts, radius=radius)
 
     # read light pos
-    light_pos_path = os.path.join(os.path.dirname(source_path), "light_pos.npy")
-    light_pos = np.load(light_pos_path)
-    light_info = compute_angles(light_pos)
+    if light_type == "OLAT":
+        light_pos_path = os.path.join(os.path.dirname(source_path), "light_pos.npy")
+        light_pos = np.load(light_pos_path)
+        light_info = compute_angles(light_pos)
+    elif light_type == "light_pattern":
+        light_pattern_path = os.path.join(os.path.dirname(source_path), "light_coeffs_9.pt")
+        light_info = torch.load(light_pattern_path)
     
     # read cam info
     cam_train_json = os.path.join(source_path, "output", "transforms_train.json")
@@ -433,7 +422,7 @@ def readOpenIlluminationInfo(source_path, num_pts, resolution_scale, eval, radiu
 
     print(f"Train: {len(cam_train_data)}, Test: {len(cam_test_data)}")
     
-    cam_infos = readCamerasFromOpenIlluminations(source_path, cam_train_data, cam_test_data, resolution_scale, white_bg)    
+    cam_infos = readCamerasFromOpenIlluminations(source_path, cam_train_data, cam_test_data, resolution_scale, white_bg, light_type)
     
     if eval:
         train_cam_infos = cam_infos[0]
