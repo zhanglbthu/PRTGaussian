@@ -18,7 +18,11 @@ from scene.gaussian_model import GaussianModel
 from arguments import ModelParams
 from utils.camera_utils import cameraList_from_camInfos, camera_to_JSON
 from utils.light_utils import light_to_JSON
+from utils.sh_utils import SH2RGB
 import sys
+from plyfile import PlyData
+import numpy as np
+from scene.gaussian_model import BasicPointCloud
 
 class Scene:
 
@@ -37,7 +41,8 @@ class Scene:
                  num_pts=100000,
                  radius=1.0,
                  white_bg=False,
-                 light_type='OLAT'):
+                 light_type='OLAT',
+                 load_pts=None):
         
         """
         :param path: Path to colmap scene main folder.
@@ -116,13 +121,24 @@ class Scene:
             print("Loading Test Cameras")
             self.test_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.test_cameras, resolution_scale, args)
 
-        if self.loaded_iter:
-            self.gaussians.load_ply(os.path.join(self.model_path,
-                                                           "point_cloud",
-                                                           "iteration_" + str(self.loaded_iter),
-                                                           "point_cloud.ply"))
+        if load_pts:
+            # 根据点云文件加载点云
+            plydata = PlyData.read(load_pts)
+            vertices = plydata['vertex']
+            positions = np.vstack([vertices['x'], vertices['y'], vertices['z']]).T
+            pts_num = positions.shape[0]
+            shs = np.random.random((pts_num, 3)) / 255.0
+            pts = BasicPointCloud(points=positions, colors=SH2RGB(shs), normals=np.zeros((pts_num, 3)))
+            
+            self.gaussians.create_from_pcd(pts, self.cameras_extent)
         else:
-            self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent)
+            if self.loaded_iter:
+                self.gaussians.load_ply(os.path.join(self.model_path,
+                                                            "point_cloud",
+                                                            "iteration_" + str(self.loaded_iter),
+                                                            "point_cloud.ply"))
+            else:
+                self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent)
 
     def save(self, iteration):
         point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))

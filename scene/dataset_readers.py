@@ -255,10 +255,9 @@ def readCamerasFromTransforms(path, transformsfile):
             FovY = fovy 
             FovX = fovx
 
-            if frame["light_idx"] == 1:
-                cam_infos.append(CameraInfo(uid=idx, cam_id="", light_id=frame["light_idx"],
-                                            R=R, T=T, FovY=FovY, FovX=FovX, image=image,
-                                            image_path=image_path, image_name=image_name, width=size[0], height=size[1]))
+            cam_infos.append(CameraInfo(uid=idx, cam_id="", light_id=frame["light_idx"],
+                                        R=R, T=T, FovY=FovY, FovX=FovX, image=image,
+                                        image_path=image_path, image_name=image_name, width=size[0], height=size[1]))
             
     return cam_infos   
 
@@ -306,7 +305,7 @@ def readCamerasFromOpenIlluminations(path, cam_train, cam_test, resolution_scale
 def loadShLightCoeffs(N = 81):
 
     basic_coeffs = torch.zeros(1, N)
-    # basic_coeffs[0, 0] = 4
+
     coeffs_list = []
     for i in range(N):
         light_coeffs = basic_coeffs.clone()
@@ -321,8 +320,9 @@ def readNerfSyntheticInfo(path, num_pts, eval, radius, llffhold=8):
     print("Reading Training Transforms")
     cam_infos = readCamerasFromTransforms(path, "transforms_train.json")
     light_nums = cam_infos[-1].light_id + 1
+    print(f"Found {light_nums} lights")
     
-    light_info = loadShLightCoeffs()
+    light_info = loadShLightCoeffs(light_nums)
     
     if eval:
         train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 0]

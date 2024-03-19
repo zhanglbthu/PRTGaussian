@@ -15,6 +15,11 @@ import configparser
 import sys
 import json
 import tinycudann as tcnn
+from PIL import Image
+import torchvision.transforms.functional as tf
+from utils.loss_utils import ssim
+from lpipsPyTorch import lpips
+from utils.image_utils import psnr
 
 def compute_diffuse_colors(light, 
                            gaussians : GaussianModel, 
@@ -100,7 +105,7 @@ def render_sets(dataset : ModelParams,
         background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
         render_set(source_path, 
-                   "train", 
+                   "test", 
                    scene.loaded_iter, 
                    scene.getTrainCameras(), 
                    gaussians,
@@ -109,15 +114,53 @@ def render_sets(dataset : ModelParams,
                    pipeline, 
                    background)
 
-        render_set(source_path, 
-                   "test", 
-                   scene.loaded_iter, 
-                   scene.getTestCameras(), 
-                   gaussians,
-                   diffuse_network,
-                   light,
-                   pipeline, 
-                   background)
+def readImages(renders_dir, gt_dir):
+    renders = []
+    gts = []
+    image_names = []
+    for fname in os.listdir(renders_dir):
+        render = Image.open(renders_dir + "/" + fname)
+        gt = Image.open(gt_dir + "/" + fname)
+        renders.append(tf.to_tensor(render).unsqueeze(0)[:, :3, :, :].cuda())
+        gts.append(tf.to_tensor(gt).unsqueeze(0)[:, :3, :, :].cuda())
+        image_names.append(fname)
+    return renders, gts, image_names
+
+def evaluate(source_path):
+    test_dir = os.path.join(source_path, "test")
+    full_dict = {}
+    
+    full_dict[source_path] = {}
+    
+    for method in os.listdir(test_dir):
+        print("Method:", method)
+        
+        full_dict[source_path][method] = {}    
+        
+        method_dir = os.path.join(test_dir, method)
+        gt_dir = os.path.join(method_dir, "gt")
+        renders_dir = os.path.join(method_dir, "renders")
+        renders, gts = readImages(renders_dir, gt_dir)
+
+        ssims = []
+        psnrs = []
+        lpipss = []
+
+        for idx in tqdm(range(len(renders)), desc="Metric evaluation progress"):
+            ssims.append(ssim(renders[idx], gts[idx]))
+            psnrs.append(psnr(renders[idx], gts[idx]))
+            lpipss.append(lpips(renders[idx], gts[idx]))
+
+        print("SSIM:", sum(ssims) / len(ssims))
+        print("PSNR:", sum(psnrs) / len(psnrs))
+        print("LPIPS:", sum(lpipss) / len(lpipss))
+        
+        full_dict[source_path][method].update({"SSIM": sum(ssims) / len(ssims),
+                                              "PSNR": sum(psnrs) / len(psnrs),
+                                              "LPIPS": sum(lpipss) / len(lpipss)})
+    
+    with open(os.path.join(source_path + "/results.json"), 'w') as file:
+        json.dump(full_dict[source_path], file, indent=True)
 
 if __name__ == "__main__":
     # Set up command line argument parser
@@ -165,3 +208,5 @@ if __name__ == "__main__":
                 source_path,
                 diffuse_network,
                 light)
+    
+    evaluate(source_path)

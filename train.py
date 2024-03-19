@@ -115,6 +115,11 @@ class TrainRunner():
         self.radius = self.config.getfloat('Scene', 'radius')
         self.white_bg = self.config.getboolean('Scene', 'white_bg')
         self.light_type = self.config['Scene']['light_type']
+        self.load_pts = self.config['Scene']['load_pts']
+        
+        # 如果load_pts不为空，则optimize_pts为False
+        self.optimize_pts = not bool(self.load_pts)
+        print("optimize_pts: ", self.optimize_pts)
         
         # optimize
         self.lambda_mask = self.config.getfloat('Optimize', 'lambda_mask')
@@ -202,7 +207,8 @@ class TrainRunner():
                       num_pts=self.num_pts,
                       radius=self.radius,
                       white_bg=self.white_bg,
-                      light_type=self.light_type)
+                      light_type=self.light_type,
+                      load_pts=self.load_pts)
         
         light_info = scene.getLightInfo()
         
@@ -256,29 +262,25 @@ class TrainRunner():
                 C = torch.abs(gt_image.min())
                 gt_image = gt_image + C * gt_mask
                 
-                # diffuse_colors的每个通道都+1.5
+                # diffuse_colors的每个通道都+C
                 diffuse_colors = diffuse_colors + C
                 
-                render_pkg = render(viewpoint_cam, gaussians, self.pipe, bg, override_color=diffuse_colors)
+                render_pkg = render(viewpoint_cam, gaussians, self.pipe, bg, override_color=diffuse_colors, override_opacity=True)
                 image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
                 
-                mask_colors = compute_random_colors(gaussians)
-                mask = render(viewpoint_cam, gaussians, self.pipe, bg, override_color=mask_colors, override_opacity=True)["render"]
+                random_colors = compute_random_colors(gaussians)
+                visualize = render(viewpoint_cam, gaussians, self.pipe, bg, override_color=random_colors, override_opacity=True)["render"]
                 
                 if iteration % 1000 == 0:
                     save_image(torch.cat((gt_image.clip(0, 1) ** (1/2.2), image.clip(0, 1) ** (1/2.2)), 2) if self.data_type == "NeRF" else torch.cat((gt_image, image), 2),
                                os.path.join(self.render_path, '{0:05d}'.format(iteration) + ".png"))
                     
-                    save_image(torch.cat((gt_mask, mask), 2),
-                               os.path.join(self.render_path, '{0:05d}'.format(iteration) + "_mask.png"))
+                    save_image(visualize, os.path.join(self.render_path, '{0:05d}'.format(iteration) + "_visualize.png"))
                 
                 
                 Ll1 = l1_loss(image, gt_image)
-                loss_mask = self.lambda_mask * mask_loss(mask, gt_mask)
                 
                 loss = (1.0 - self.opt.lambda_dssim) * Ll1 
-                # self.opt.lambda_dssim * (1.0 - ssim(image, gt_image)) 
-                # loss_mask
                 
                 loss.backward()
                 
@@ -292,13 +294,13 @@ class TrainRunner():
                     if iteration == self.opt.iterations:
                         progress_bar.close()
                     
-                    self.training_report(tb_writer, iteration, Ll1, loss_mask, loss, l1_loss, iter_start.elapsed_time(iter_end), self.test_iterations, scene, (self.pipe, background), gaussians, light_info)
+                    self.training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), self.test_iterations, scene, (self.pipe, background), gaussians, light_info)
                     
                     if (iteration in self.save_iterations):
                         print("\n[ITER {}] Saving Gaussians".format(iteration))
                         scene.save(iteration)
                     
-                    if iteration < self.opt.densify_until_iter:
+                    if iteration < self.opt.densify_until_iter and self.optimize_pts:
                         gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
                         gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
                         
@@ -310,8 +312,9 @@ class TrainRunner():
                             gaussians.reset_opacity()
                     
                     if iteration < self.opt.iterations:
-                        gaussians.optimizer.step()
-                        gaussians.optimizer.zero_grad(set_to_none = True)
+                        if self.optimize_pts:
+                            gaussians.optimizer.step()
+                            gaussians.optimizer.zero_grad(set_to_none = True)
                         
                         if self.render_type != "origin":
                             optimizer.step()
@@ -352,11 +355,10 @@ class TrainRunner():
             print("Tensorboard not available: not logging progress")
         return tb_writer
 
-    def training_report(self, tb_writer, iteration, Ll1, loss_mask, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderArgs,
+    def training_report(self, tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderArgs,
                         gaussians : GaussianModel = None, light_info = None):
         if tb_writer:
             tb_writer.add_scalar('train_loss_patches/l1_loss', Ll1.item(), iteration)
-            tb_writer.add_scalar('train_loss_patches/mask_loss', loss_mask.item(), iteration)
             tb_writer.add_scalar('train_loss_patches/total_loss', loss.item(), iteration)
             tb_writer.add_scalar('iter_time', elapsed, iteration)
 
@@ -379,7 +381,7 @@ class TrainRunner():
                                                                 self.total_order, 
                                                                 self.render_type)
                         
-                        image = render(viewpoint, gaussians, *renderArgs, override_color=diffuse_colors)["render"]
+                        image = render(viewpoint, gaussians, *renderArgs, override_color=diffuse_colors, override_opacity=True)["render"]
                         gt_image = viewpoint.original_image.to("cuda")
                         
                         l1_test += l1_loss(image, gt_image).mean().double()
@@ -426,7 +428,7 @@ class TrainRunner():
                                                     self.total_order, 
                                                     self.render_type)
             
-            rendering = render(view, gaussians, pipeline, background, override_color=diffuse_colors)["render"]
+            rendering = render(view, gaussians, pipeline, background, override_color=diffuse_colors, override_opacity=True)["render"]
             gt = view.original_image[0:3, :, :]
             
             if self.data_type == "NeRF":
