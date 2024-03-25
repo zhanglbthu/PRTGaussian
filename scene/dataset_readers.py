@@ -30,7 +30,8 @@ import OpenEXR
 import Imath
 
 from tqdm import tqdm
-from my_utils.math_utils import compute_angles, compute_angle
+from my_utils.math_utils import compute_angles
+from my_utils.sh.pm2sh_v2 import get_sh_coeffs
 import torch
 
 class CameraInfo(NamedTuple):
@@ -232,6 +233,9 @@ def readCamerasFromTransforms(path, transformsfile):
         
         for idx, frame in tqdm(enumerate(frames)):
             
+            if frame["light_idx"] > 3:
+                continue
+            
             image_path = os.path.join(path, frame["file_path"] + '.exr')
             image_name = Path(image_path).stem
             if frame["light_idx"] == 0:
@@ -313,6 +317,7 @@ def loadShLightCoeffs(N = 81):
         coeffs_list.append(light_coeffs.repeat(3, 1).unsqueeze(0))
     
     final_coeffs = torch.cat(coeffs_list, dim=0)
+    print("final_coeffs: ", final_coeffs)
     assert final_coeffs.shape == (N, 3, N)
     return final_coeffs
 
@@ -321,8 +326,20 @@ def readNerfSyntheticInfo(path, num_pts, eval, radius, llffhold=8):
     cam_infos = readCamerasFromTransforms(path, "transforms_train.json")
     light_nums = cam_infos[-1].light_id + 1
     print(f"Found {light_nums} lights")
+    light_pos_path = os.path.join(path, "light_pos.npy")
     
-    light_info = loadShLightCoeffs(light_nums)
+    if os.path.exists(light_pos_path):
+        print("Loading light pos")
+        light_pos = np.load(light_pos_path)
+        light_info = []
+        dirs = compute_angles(light_pos)
+        for dir in dirs:
+            light_info.append(get_sh_coeffs(direction=dir, order=9))
+        light_info = torch.stack(light_info, dim=0)
+        print(f"Loaded light info with shape {light_info.shape}")
+        
+    else:
+        light_info = loadShLightCoeffs(N = 4)
     
     if eval:
         train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 0]

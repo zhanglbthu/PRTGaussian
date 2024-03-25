@@ -105,7 +105,7 @@ def render_sets(dataset : ModelParams,
         background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
         render_set(source_path, 
-                   "test", 
+                   "eval", 
                    scene.loaded_iter, 
                    scene.getTrainCameras(), 
                    gaussians,
@@ -127,7 +127,7 @@ def readImages(renders_dir, gt_dir):
     return renders, gts, image_names
 
 def evaluate(source_path):
-    test_dir = os.path.join(source_path, "test")
+    test_dir = os.path.join(source_path, "eval")
     full_dict = {}
     
     full_dict[source_path] = {}
