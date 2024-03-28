@@ -24,8 +24,8 @@ from utils.image_utils import psnr
 def compute_diffuse_colors(light, 
                            gaussians : GaussianModel, 
                            model, 
-                           color_order=9, 
-                           total_order=9, 
+                           color_order=7, 
+                           total_order=7, 
                            render_type="not_origin",
                            data_type="NeRF"):
 
@@ -89,6 +89,7 @@ def render_sets(dataset : ModelParams,
                 pipeline : PipelineParams, 
                 model_path : str,
                 source_path : str,
+                pts_path : str,
                 diffuse_network : tcnn.NetworkWithInputEncoding,
                 light : torch.Tensor):
     
@@ -96,14 +97,17 @@ def render_sets(dataset : ModelParams,
         gaussians = GaussianModel(dataset.sh_degree)
         scene = Scene(args=dataset, 
                       gaussians=gaussians,
-                      load_iteration=iteration, 
+                      load_iteration=iteration,
+                      load_pts=pts_path,
                       shuffle=False, 
                       model_path=model_path, 
                       source_path=source_path)
 
         bg_color = [1,1,1] if dataset.white_background else [0, 0, 0]
         background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
-
+        if light is None:
+            light = scene.getLightInfo()
+        
         render_set(source_path, 
                    "eval", 
                    scene.loaded_iter, 
@@ -182,6 +186,7 @@ if __name__ == "__main__":
     source_path = config["Path"]["source_path"]
     model_path = config["Path"]["model_path"]
     light_path = config["Path"]["light_path"]
+    pts_path = config["Path"]["pts_path"]
     ckpt_path = os.path.join(model_path, "ckpt")
     
     input_dim = config.getint("DiffuseNetwork", "input_dim")
@@ -199,13 +204,18 @@ if __name__ == "__main__":
                                                     network_config=config["network"])
     
     diffuse_network.load_state_dict(torch.load(dn_ckpt))
-    light = torch.load(light_path)
+    try:
+        light = torch.load(light_path)
+    except:
+        print("No light info found")
+        light = None
     
     render_sets(model.extract(args), 
                 args.iteration, 
                 pipeline.extract(args), 
                 model_path,
                 source_path,
+                pts_path,
                 diffuse_network,
                 light)
     

@@ -125,6 +125,8 @@ class TrainRunner():
         # optimize
         self.batch_size = self.config.getint('Optimize', 'batch_size')
         self.lambda_mask = self.config.getfloat('Optimize', 'lambda_mask')
+        self.patience = self.config.getint('Optimize', 'patience')
+        self.min_delta = self.config.getfloat('Optimize', 'min_delta')
         
         # network
         self.lr = self.config.getfloat('DiffuseNetwork', 'lr')
@@ -231,6 +233,11 @@ class TrainRunner():
             
             optimizer = torch.optim.Adam(self.diffuse_decoder.parameters(), lr=self.lr)
             
+            best_loss = float('inf')
+            patience_counter = 0
+            epoch = 0
+            early_stop = False
+            
             for iteration in range(first_iter, self.opt.iterations + 1):        
                 iter_start.record()
             
@@ -238,10 +245,43 @@ class TrainRunner():
                 for batch in range(self.batch_size):
                     if not viewpoint_stack:
                         viewpoint_stack = scene.getTrainCameras().copy()
+                        
+                        self.diffuse_decoder.eval()
+                        validation_loss = 0.0
+                        epoch += 1
+                        with torch.no_grad():
+                            test_cameras = scene.getTestCameras().copy()
+                            for viewpoint_cam in test_cameras:
+                                diffuse_colors = compute_diffuse_colors(light_info[viewpoint_cam.light_id] if light_info is not None else None,
+                                                                        gaussians, 
+                                                                        self.diffuse_decoder, 
+                                                                        self.color_order, 
+                                                                        self.total_order,
+                                                                        self.render_type,
+                                                                        self.data_type)
+                                
+                                gt_image = viewpoint_cam.original_image.to("cuda")
+                                
+                                render_pkg = render(viewpoint_cam, gaussians, self.pipe, background, override_color=diffuse_colors, override_opacity=self.opacity)
+                                image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+                                
+                                Ll1 = l1_loss(image, gt_image)
+                                
+                                validation_loss += (1.0 - self.opt.lambda_dssim) * Ll1
+                            validation_loss /= len(test_cameras)
+                            
+                            # 早停检查
+                            if best_loss - validation_loss > self.min_delta:
+                                best_loss = validation_loss
+                                patience_counter = 0
+                            else:
+                                patience_counter += 1
+                            if patience_counter > self.patience:
+                                print("Early stopping at iteration {} and epoch {}".format(iteration, epoch))
+                                early_stop = True
+                                break
+                        
                     viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
-                    
-                    if (iteration - 1) == self.debug_from:
-                        self.pipe.debug = True
                     
                     bg = torch.rand((3), device="cuda") if self.opt.random_background else background
                     
@@ -261,27 +301,13 @@ class TrainRunner():
                     render_pkg = render(viewpoint_cam, gaussians, self.pipe, bg, override_color=diffuse_colors, override_opacity=self.opacity)
                     image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
                     
-                    random_colors = compute_random_colors(gaussians)
-                    visualize = render(viewpoint_cam, gaussians, self.pipe, bg, override_color=random_colors, override_opacity=self.opacity)["render"]
-                    
                     Ll1 = l1_loss(image, gt_image)
                     
                     loss += (1.0 - self.opt.lambda_dssim) * Ll1
-                    
-                    # if iteration % 1000 == 0 and batch == 0:
-                        
-                    #     gt_image += torch.abs(gt_image.min())
-                    #     gt_image *= gt_mask
-                    #     gt_image /= gt_image.max()
-                    #     image += torch.abs(image.min())
-                    #     image *= gt_mask
-                    #     image /= image.max()
-                        
-                    #     gt_image **= 1/2.2
-                    #     image **= 1/2.2
-                        
-                    #     save_image(torch.cat((gt_image, image), 2), os.path.join(self.render_path, '{0:05d}'.format(iteration) + ".png"))
-                    #     save_image(visualize, os.path.join(self.render_path, '{0:05d}'.format(iteration) + "_visualize.png"))
+                
+                if early_stop:
+                    self.final_iteration = iteration
+                    break
                 
                 loss /= self.batch_size
                 loss.backward()
@@ -333,6 +359,10 @@ class TrainRunner():
                         os.makedirs(diffuse_decoder_ckpt_folder, exist_ok = True)
                         torch.save(self.diffuse_decoder.state_dict(), os.path.join(diffuse_decoder_ckpt_folder, "diffuse_decoder.pth"))
 
+        diffuse_decoder_ckpt_folder = os.path.join(self.ckpt_path, "iteration_{}".format(self.final_iteration))
+        os.makedirs(diffuse_decoder_ckpt_folder, exist_ok = True)
+        torch.save(self.diffuse_decoder.state_dict(), os.path.join(diffuse_decoder_ckpt_folder, "diffuse_decoder.pth"))
+        
         self.render_set("train", self.opt.iterations, scene.getTrainCameras(), gaussians, self.pipe, background, light_info)
         self.render_set("test", self.opt.iterations, scene.getTestCameras(), gaussians, self.pipe, background, light_info)
 
