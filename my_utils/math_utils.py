@@ -6,7 +6,7 @@ def compute_angle(direction):
     # * phi: azimuth angle
     direction_normlized = direction / np.linalg.norm(direction) # (3,)
     
-    phi = np.arctan2(direction_normlized[1], direction_normlized[0]) # (-pi, pi)
+    phi = np.arctan2( - direction_normlized[1], direction_normlized[0]) # (-pi, pi)
     theta = np.arccos(direction_normlized[2]) # (0, pi)
     
     return phi, theta

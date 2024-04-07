@@ -128,6 +128,9 @@ class TrainRunner():
         self.patience = self.config.getint('Optimize', 'patience')
         self.min_delta = self.config.getfloat('Optimize', 'min_delta')
         
+        # gaussians
+        self.albedo_lr = self.config.getfloat('Gaussians', 'albedo_lr')
+        
         # network
         self.lr = self.config.getfloat('DiffuseNetwork', 'lr')
         self.color_order = self.config.getint('DiffuseNetwork', 'color_order')
@@ -216,7 +219,8 @@ class TrainRunner():
         
         light_info = scene.getLightInfo()
         
-        gaussians.training_setup(self.opt)
+        gaussians.training_setup(self.opt,
+                                 self.albedo_lr)
         
         bg_color = [1, 1, 1] if self.white_bg else [0, 0, 0]
         background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
@@ -260,6 +264,8 @@ class TrainRunner():
                                                                         self.render_type,
                                                                         self.data_type)
                                 
+                                diffuse_colors = gaussians.get_albedo * diffuse_colors
+                                
                                 gt_image = viewpoint_cam.original_image.to("cuda")
                                 
                                 render_pkg = render(viewpoint_cam, gaussians, self.pipe, background, override_color=diffuse_colors, override_opacity=self.opacity)
@@ -297,6 +303,9 @@ class TrainRunner():
                     gt_mask = viewpoint_cam.mask.to("cuda")
                     
                     gt_mask = torch.cat((gt_mask, gt_mask, gt_mask), dim=0)
+                    
+                    # * add albedo
+                    diffuse_colors = gaussians.get_albedo * diffuse_colors
                     
                     render_pkg = render(viewpoint_cam, gaussians, self.pipe, bg, override_color=diffuse_colors, override_opacity=self.opacity)
                     image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
@@ -341,9 +350,8 @@ class TrainRunner():
                             gaussians.reset_opacity()
                     
                     if iteration < self.opt.iterations:
-                        if self.optimize_pts:
-                            gaussians.optimizer.step()
-                            gaussians.optimizer.zero_grad(set_to_none = True)
+                        gaussians.optimizer.step()
+                        gaussians.optimizer.zero_grad(set_to_none = True)
                         
                         if self.render_type != "origin":
                             optimizer.step()
@@ -358,7 +366,8 @@ class TrainRunner():
                         diffuse_decoder_ckpt_folder = os.path.join(self.ckpt_path, "iteration_{}".format(iteration))
                         os.makedirs(diffuse_decoder_ckpt_folder, exist_ok = True)
                         torch.save(self.diffuse_decoder.state_dict(), os.path.join(diffuse_decoder_ckpt_folder, "diffuse_decoder.pth"))
-
+                        
+        scene.save(self.final_iteration)
         diffuse_decoder_ckpt_folder = os.path.join(self.ckpt_path, "iteration_{}".format(self.final_iteration))
         os.makedirs(diffuse_decoder_ckpt_folder, exist_ok = True)
         torch.save(self.diffuse_decoder.state_dict(), os.path.join(diffuse_decoder_ckpt_folder, "diffuse_decoder.pth"))
@@ -414,10 +423,19 @@ class TrainRunner():
                                                                 self.total_order, 
                                                                 self.render_type)
                         
+                        raw_diffuse_colors = diffuse_colors.clone()
+                        raw_image = render(viewpoint, gaussians, *renderArgs, override_color=raw_diffuse_colors, override_opacity=self.opacity)["render"]
+                        
+                        diffuse_colors = gaussians.get_albedo * diffuse_colors
+                        
                         image = render(viewpoint, gaussians, *renderArgs, override_color=diffuse_colors, override_opacity=self.opacity)["render"]
                         
                         random_colors = compute_random_colors(gaussians)
                         visualize = render(viewpoint, gaussians, *renderArgs, override_color=random_colors, override_opacity=self.opacity)["render"]
+                        
+                        white_colors = compute_mask_colors(gaussians)
+                        albedo_colors = gaussians.get_albedo * white_colors
+                        albedo_img = render(viewpoint, gaussians, *renderArgs, override_color=albedo_colors, override_opacity=self.opacity)["render"]
                         
                         gt_image = viewpoint.original_image.to("cuda")
                         gt_mask = viewpoint.mask.to("cuda")
@@ -427,23 +445,40 @@ class TrainRunner():
                         psnr_test += psnr(image, gt_image).mean().double()
                         
                         if self.data_type == "NeRF":
-                            image = self.correct_image(image, mask=gt_mask, scale=True, gamma=True)
-                            gt_image = self.correct_image(gt_image, mask=gt_mask, scale=True, gamma=True)
+                            image = self.correct_image(image, scale=True, gamma=True)
+                            gt_image = self.correct_image(gt_image, scale=True, gamma=True)
+                            albedo_img = self.correct_image(albedo_img, gamma=True)
+                            raw_image = self.correct_image(raw_image, scale=True, gamma=True)
                         
                         if tb_writer and (idx < 5):
                             tb_writer.add_images(config['name'] + "_view_{}/render".format(viewpoint.image_name), image[None], global_step=iteration)
                             if iteration == testing_iterations[0]:
                                 tb_writer.add_images(config['name'] + "_view_{}/ground_truth".format(viewpoint.image_name), gt_image[None], global_step=iteration)
                             
+                            light_coeffs = light_info[viewpoint.light_id] if light_info is not None else None
+                            sh_img = get_pm_from_sh(light_coeffs, resolution=[128, 64], order=9)
+                            
                             # 根据iteration创建render_path下的文件夹
                             render_folder = os.path.join(self.render_path, '{}_{:d}'.format(config['name'], idx), 'renders')
                             mask_folder = os.path.join(self.render_path, '{}_{:d}'.format(config['name'], idx), 'mask')
+                            albedo_folder = os.path.join(self.render_path, '{}_{:d}'.format(config['name'], idx), 'albedo')
+                            lt_folder = os.path.join(self.render_path, '{}_{:d}'.format(config['name'], idx), 'lt')
+                            sh_folder = os.path.join(self.render_path, '{}_{:d}'.format(config['name'], idx), 'sh_img')
                             if not os.path.exists(render_folder):
                                 os.makedirs(render_folder)
                             if not os.path.exists(mask_folder):
                                 os.makedirs(mask_folder)
+                            if not os.path.exists(albedo_folder):
+                                os.makedirs(albedo_folder)
+                            if not os.path.exists(lt_folder):
+                                os.makedirs(lt_folder)
+                            if not os.path.exists(sh_folder):
+                                os.makedirs(sh_folder)
                             save_image(torch.cat((gt_image, image), 2), os.path.join(render_folder, '{0:05d}'.format(iteration) + ".png"))
                             save_image(visualize, os.path.join(mask_folder, '{0:05d}'.format(iteration) + ".png"))
+                            save_image(albedo_img, os.path.join(albedo_folder, '{0:05d}'.format(iteration) + ".png"))
+                            save_image(raw_image, os.path.join(lt_folder, '{0:05d}'.format(iteration) + ".png"))
+                            save_image(sh_img, os.path.join(sh_folder, '{0:05d}'.format(iteration) + ".png"))
                             
                     psnr_test /= len(config['cameras'])
                     l1_test /= len(config['cameras'])          
@@ -473,6 +508,8 @@ class TrainRunner():
                                                     self.color_order, 
                                                     self.total_order, 
                                                     self.render_type)
+            
+            diffuse_colors = gaussians.get_albedo * diffuse_colors
             
             rendering = render(view, gaussians, pipeline, background, override_color=diffuse_colors, override_opacity=self.opacity)["render"]
             gt = view.original_image[0:3, :, :].to("cuda")
@@ -504,8 +541,8 @@ if __name__ == "__main__":
     pp = PipelineParams(parser)
     parser.add_argument('--debug_from', type=int, default=-1)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
-    parser.add_argument("--test_iterations", nargs="+", type=int, default=[1_000, 3_000, 5_000, 7_000, 15_000, 30_000])
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 30_000])
+    parser.add_argument("--test_iterations", nargs="+", type=int, default=[10, 100, 500, 1_000, 2_000, 3_000, 5_000, 7_000, 10_000, 15_000, 30_000])
+    parser.add_argument("--save_iterations", nargs="+", type=int, default=[1_000, 3_000, 7_000, 10_000, 30_000])
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[7_000, 30_000])
     parser.add_argument("--start_checkpoint", type=str, default = None)

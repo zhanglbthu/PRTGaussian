@@ -232,13 +232,13 @@ def readCamerasFromTransforms(path, transformsfile):
         shift_image = np.zeros((tmp_image.shape))
         
         for idx, frame in tqdm(enumerate(frames)):
-            if frame["light_idx"] > 48:
-                continue
+            # if frame["light_idx"] > 2:
+            #     continue
 
             image_path = os.path.join(path, frame["file_path"] + '.exr')
             image_name = Path(image_path).stem
-            if frame["light_idx"] == 0:
-                shift_image, _ = readEXRImage(image_path)
+            # if frame["light_idx"] == 0:
+            #     shift_image, _ = readEXRImage(image_path)
             
             # NeRF 'transform_matrix' is a camera-to-world transform
             c2w = np.array(frame["transform_matrix"])
@@ -252,7 +252,7 @@ def readCamerasFromTransforms(path, transformsfile):
             
             image, size = readEXRImage(image_path)
             
-            image[:, :, :3] = image[:, :, :3] - 4 / 5 * shift_image[:, :, :3]
+            # image[:, :, :3] = image[:, :, :3] - 4 / 5 * shift_image[:, :, :3]
             
             fovy = focal2fov(fov2focal(fovx, size[0]), size[1])
             FovY = fovy 
@@ -334,12 +334,12 @@ def readNerfSyntheticInfo(path, num_pts, eval, radius, llffhold=8):
         light_info = []
         dirs = compute_angles(light_pos)
         for dir in dirs:
-            light_info.append(get_sh_coeffs(direction=dir, order=7))
+            light_info.append(get_sh_coeffs(direction=dir, order=9))
         light_info = torch.stack(light_info, dim=0)
         print(f"Loaded light info with shape {light_info.shape}")
         
     else:
-        light_info = loadShLightCoeffs(N = 49)
+        light_info = loadShLightCoeffs(N = 81)
     
     if eval:
         train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 0]

@@ -24,8 +24,8 @@ from utils.image_utils import psnr
 def compute_diffuse_colors(light, 
                            gaussians : GaussianModel, 
                            model, 
-                           color_order=7, 
-                           total_order=7, 
+                           color_order=0, 
+                           total_order=9, 
                            render_type="not_origin",
                            data_type="NeRF"):
 
@@ -61,7 +61,7 @@ def render_set(source_path,
                name, 
                iteration, 
                views, 
-               gaussians,
+               gaussians : GaussianModel,
                diffuse_network,
                light,
                pipeline, 
@@ -78,6 +78,8 @@ def render_set(source_path,
         diffuse_colors = compute_diffuse_colors(light[view.light_id],
                                                 gaussians,
                                                 diffuse_network)
+        
+        diffuse_colors = gaussians.get_albedo * diffuse_colors
         
         rendering = render(view, gaussians, pipeline, background, override_color=diffuse_colors)["render"]
         gt = view.original_image[0:3, :, :]
@@ -98,7 +100,6 @@ def render_sets(dataset : ModelParams,
         scene = Scene(args=dataset, 
                       gaussians=gaussians,
                       load_iteration=iteration,
-                      load_pts=pts_path,
                       shuffle=False, 
                       model_path=model_path, 
                       source_path=source_path)
@@ -128,7 +129,7 @@ def readImages(renders_dir, gt_dir):
         renders.append(tf.to_tensor(render).unsqueeze(0)[:, :3, :, :].cuda())
         gts.append(tf.to_tensor(gt).unsqueeze(0)[:, :3, :, :].cuda())
         image_names.append(fname)
-    return renders, gts, image_names
+    return renders, gts
 
 def evaluate(source_path):
     test_dir = os.path.join(source_path, "eval")
@@ -148,20 +149,17 @@ def evaluate(source_path):
 
         ssims = []
         psnrs = []
-        lpipss = []
 
         for idx in tqdm(range(len(renders)), desc="Metric evaluation progress"):
             ssims.append(ssim(renders[idx], gts[idx]))
             psnrs.append(psnr(renders[idx], gts[idx]))
-            lpipss.append(lpips(renders[idx], gts[idx]))
 
         print("SSIM:", sum(ssims) / len(ssims))
         print("PSNR:", sum(psnrs) / len(psnrs))
-        print("LPIPS:", sum(lpipss) / len(lpipss))
         
-        full_dict[source_path][method].update({"SSIM": sum(ssims) / len(ssims),
-                                              "PSNR": sum(psnrs) / len(psnrs),
-                                              "LPIPS": sum(lpipss) / len(lpipss)})
+        full_dict[source_path][method].update({"SSIM": torch.tensor(ssims).mean().item()})
+        full_dict[source_path][method].update({"PSNR": torch.tensor(psnrs).mean().item()})
+        
     
     with open(os.path.join(source_path + "/results.json"), 'w') as file:
         json.dump(full_dict[source_path], file, indent=True)
@@ -194,14 +192,14 @@ if __name__ == "__main__":
     config_path = config["DiffuseNetwork"]["config_path"]
 
     with open(config_path, 'r') as f:
-        config = json.load(f)
+        dn_config = json.load(f)
     
     load_iteration = searchForMaxIteration(ckpt_path)
     dn_ckpt = os.path.join(ckpt_path, "iteration_{}".format(load_iteration), "diffuse_decoder.pth")
     diffuse_network = tcnn.NetworkWithInputEncoding(n_input_dims=input_dim, 
                                                     n_output_dims=output_dim, 
-                                                    encoding_config=config["encoding"],
-                                                    network_config=config["network"])
+                                                    encoding_config=dn_config["encoding"],
+                                                    network_config=dn_config["network"])
     
     diffuse_network.load_state_dict(torch.load(dn_ckpt))
     try:
@@ -209,6 +207,12 @@ if __name__ == "__main__":
     except:
         print("No light info found")
         light = None
+    
+    method_path = os.path.join(source_path, "eval", "ours_{}".format(load_iteration))
+    makedirs(method_path, exist_ok=True)
+    # 保存config文件
+    with open(os.path.join(method_path, "config.ini"), 'w') as f:
+        config.write(f)
     
     render_sets(model.extract(args), 
                 args.iteration, 

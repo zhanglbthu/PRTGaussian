@@ -25,10 +25,6 @@ import commentjson as json
 import tinycudann as tcnn
 import torch.nn.functional as F
 
-def shifted_softplus(x):
-    x_prime = x - 5  # Shift x by 5 units
-    return F.softplus(x_prime)  # Apply the PyTorch softplus function
-
 class GaussianModel:
 
     def setup_functions(self):
@@ -47,6 +43,8 @@ class GaussianModel:
         self.inverse_opacity_activation = inverse_sigmoid
 
         self.rotation_activation = torch.nn.functional.normalize
+        
+        self.albedo_activation = torch.relu
 
 
     def __init__(self, sh_degree : int):
@@ -61,6 +59,7 @@ class GaussianModel:
         self.max_radii2D = torch.empty(0)
         self.xyz_gradient_accum = torch.empty(0)
         self.denom = torch.empty(0)
+        self.albedo = torch.empty(0) # * 反照率
         self.optimizer = None
         self.percent_dense = 0
         self.spatial_lr_scale = 0
@@ -78,6 +77,7 @@ class GaussianModel:
             self.max_radii2D,
             self.xyz_gradient_accum,
             self.denom,
+            self.albedo,
             self.optimizer.state_dict(),
             self.spatial_lr_scale,
         )
@@ -93,6 +93,7 @@ class GaussianModel:
         self.max_radii2D, 
         xyz_gradient_accum, 
         denom,
+        self._albedo,
         opt_dict, 
         self.spatial_lr_scale) = model_args
         self.training_setup(training_args)
@@ -122,6 +123,10 @@ class GaussianModel:
     def get_opacity(self):
         return self.opacity_activation(self._opacity)
     
+    @property
+    def get_albedo(self):
+        return self.albedo_activation(self._albedo)
+    
     def get_covariance(self, scaling_modifier = 1):
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
 
@@ -141,13 +146,14 @@ class GaussianModel:
         dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()), 0.0000001)
         scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 3) # * (N, 3)
         
-        print("scales: ", scales)
-        
         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda") # * (N, 4) 4代表四元数
         rots[:, 0] = 1
 
         opacities = inverse_sigmoid(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda")) # * (N, 1)
 
+        N = fused_point_cloud.shape[0]
+        albedo = torch.randn((N, 3), dtype=torch.float, device="cuda") # * (N, 3)
+        
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True)) # * (N, 3)
         self._features_dc = nn.Parameter(features[:,:,0:1].transpose(1, 2).contiguous().requires_grad_(True)) # * (N, 1, 3) 
         self._features_rest = nn.Parameter(features[:,:,1:].transpose(1, 2).contiguous().requires_grad_(True)) # * (N, 15, 3) 
@@ -155,8 +161,9 @@ class GaussianModel:
         self._rotation = nn.Parameter(rots.requires_grad_(True)) # * (N, 4)
         self._opacity = nn.Parameter(opacities.requires_grad_(True)) # * (N, 1)
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda") # * (N)
+        self._albedo = nn.Parameter(albedo.requires_grad_(True)) # * (N, 3)
 
-    def training_setup(self, training_args):
+    def training_setup(self, training_args, albedo_lr = 0.01):
         '''
         set up the optimizer and the learning rate scheduler
         '''
@@ -171,6 +178,7 @@ class GaussianModel:
             {'params': [self._opacity], 'lr': training_args.opacity_lr, "name": "opacity"},
             {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
             {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"},
+            {'params': [self._albedo], 'lr': albedo_lr, "name": "albedo"},
         ]
 
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
@@ -200,6 +208,8 @@ class GaussianModel:
             l.append('scale_{}'.format(i))
         for i in range(self._rotation.shape[1]):
             l.append('rot_{}'.format(i))
+        for i in range(self._albedo.shape[1]):
+            l.append('albedo_{}'.format(i))
         return l
 
     def save_ply(self, path):
@@ -212,11 +222,12 @@ class GaussianModel:
         opacities = self._opacity.detach().cpu().numpy()
         scale = self._scaling.detach().cpu().numpy()
         rotation = self._rotation.detach().cpu().numpy()
+        albedo = self._albedo.detach().cpu().numpy()
 
         dtype_full = [(attribute, 'f4') for attribute in self.construct_list_of_attributes()]
 
         elements = np.empty(xyz.shape[0], dtype=dtype_full)
-        attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation), axis=1)
+        attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation, albedo), axis=1)
         elements[:] = list(map(tuple, attributes))
         el = PlyElement.describe(elements, 'vertex')
         PlyData([el]).write(path)
@@ -259,6 +270,12 @@ class GaussianModel:
         rots = np.zeros((xyz.shape[0], len(rot_names)))
         for idx, attr_name in enumerate(rot_names):
             rots[:, idx] = np.asarray(plydata.elements[0][attr_name])
+            
+        albedo_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("albedo")]
+        albedo_names = sorted(albedo_names, key = lambda x: int(x.split('_')[-1]))
+        albedo = np.zeros((xyz.shape[0], len(albedo_names)))
+        for idx, attr_name in enumerate(albedo_names):
+            albedo[:, idx] = np.asarray(plydata.elements[0][attr_name])
 
         self._xyz = nn.Parameter(torch.tensor(xyz, dtype=torch.float, device="cuda").requires_grad_(True))
         self._features_dc = nn.Parameter(torch.tensor(features_dc, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
@@ -266,6 +283,7 @@ class GaussianModel:
         self._opacity = nn.Parameter(torch.tensor(opacities, dtype=torch.float, device="cuda").requires_grad_(True))
         self._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device="cuda").requires_grad_(True))
         self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device="cuda").requires_grad_(True))
+        self._albedo = nn.Parameter(torch.tensor(albedo, dtype=torch.float, device="cuda").requires_grad_(True))
 
         self.active_sh_degree = self.max_sh_degree
 

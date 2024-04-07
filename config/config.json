@@ -10,19 +10,19 @@
 		"epsilon": 1e-8,
 		"l2_reg": 1e-8
 	},
-	"encoding": {
-		"otype": "HashGrid",
-		"n_levels": 64,
-		"n_features_per_level": 8,
-		"log2_hashmap_size": 20,
-		"base_resolution": 16,
-		"per_level_scale": 1.5
-	},
-	"network": {
-		"otype": "CutlassMLP",
-		"activation": "ReLU",
-		"output_activation": "None",
-		"n_neurons": 256,
-		"n_hidden_layers": 4
-	}
+    "encoding": {
+        "otype": "HashGrid",
+        "n_levels": 32,
+        "n_features_per_level": 8,
+        "log2_hashmap_size": 20,
+        "base_resolution": 16,
+        "per_level_scale": 1.5
+    },
+    "network": {
+        "otype": "CutlassMLP",
+        "activation": "ReLU",
+        "output_activation": "None",
+        "n_neurons": 256,
+        "n_hidden_layers": 4
+    }
 }

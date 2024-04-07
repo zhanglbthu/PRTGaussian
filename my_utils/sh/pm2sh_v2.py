@@ -97,7 +97,7 @@ def get_pm_from_sh(coeffs, resolution=[32, 16], order=3):
 
 if __name__ == "__main__":
     direction = [0., np.pi/4]
-    order = 4
+    order = 5
     coffes = get_sh_coeffs(direction, order=order)
     print(coffes.shape)
     pm = get_pm_from_sh(coffes, resolution=[64, 32], order=order)
