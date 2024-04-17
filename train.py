@@ -264,7 +264,7 @@ class TrainRunner():
                                                                         self.render_type,
                                                                         self.data_type)
                                 
-                                diffuse_colors = gaussians.get_albedo * diffuse_colors
+                                # diffuse_colors = gaussians.get_albedo * diffuse_colors
                                 
                                 gt_image = viewpoint_cam.original_image.to("cuda")
                                 
@@ -305,7 +305,7 @@ class TrainRunner():
                     gt_mask = torch.cat((gt_mask, gt_mask, gt_mask), dim=0)
                     
                     # * add albedo
-                    diffuse_colors = gaussians.get_albedo * diffuse_colors
+                    # diffuse_colors = gaussians.get_albedo * diffuse_colors
                     
                     render_pkg = render(viewpoint_cam, gaussians, self.pipe, bg, override_color=diffuse_colors, override_opacity=self.opacity)
                     image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
@@ -337,17 +337,17 @@ class TrainRunner():
                         print("\n[ITER {}] Saving Gaussians".format(iteration))
                         scene.save(iteration)
                     
-                    if iteration < self.opt.densify_until_iter and self.optimize_pts:
-                        print("\n[ITER {}] Optimizing Points".format(iteration))
-                        gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
-                        gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
+                    # if iteration < self.opt.densify_until_iter and self.optimize_pts:
+                    #     print("\n[ITER {}] Optimizing Points".format(iteration))
+                    #     gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
+                    #     gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
                         
-                        if iteration > self.opt.densify_from_iter and iteration % self.opt.densification_interval == 0:
-                            size_threshold = 20 if iteration > self.opt.opacity_reset_interval else None
-                            gaussians.densify_and_prune(self.opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
+                    #     if iteration > self.opt.densify_from_iter and iteration % self.opt.densification_interval == 0:
+                    #         size_threshold = 20 if iteration > self.opt.opacity_reset_interval else None
+                    #         gaussians.densify_and_prune(self.opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
                         
-                        if iteration % self.opt.opacity_reset_interval == 0 or (self.dataset.white_background and iteration == self.opt.densify_from_iter):
-                            gaussians.reset_opacity()
+                    #     if iteration % self.opt.opacity_reset_interval == 0 or (self.dataset.white_background and iteration == self.opt.densify_from_iter):
+                    #         gaussians.reset_opacity()
                     
                     if iteration < self.opt.iterations:
                         gaussians.optimizer.step()
@@ -426,7 +426,7 @@ class TrainRunner():
                         raw_diffuse_colors = diffuse_colors.clone()
                         raw_image = render(viewpoint, gaussians, *renderArgs, override_color=raw_diffuse_colors, override_opacity=self.opacity)["render"]
                         
-                        diffuse_colors = gaussians.get_albedo * diffuse_colors
+                        # diffuse_colors = gaussians.get_albedo * diffuse_colors
                         
                         image = render(viewpoint, gaussians, *renderArgs, override_color=diffuse_colors, override_opacity=self.opacity)["render"]
                         
@@ -509,7 +509,7 @@ class TrainRunner():
                                                     self.total_order, 
                                                     self.render_type)
             
-            diffuse_colors = gaussians.get_albedo * diffuse_colors
+            # diffuse_colors = gaussians.get_albedo * diffuse_colors
             
             rendering = render(view, gaussians, pipeline, background, override_color=diffuse_colors, override_opacity=self.opacity)["render"]
             gt = view.original_image[0:3, :, :].to("cuda")

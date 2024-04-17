@@ -1,13 +1,13 @@
 #!/bin/bash
 blender_path="/root/blender-3.6.5-linux-x64/blender"
-objs=(hotdog_specular_point)
+objs=(drums_specular_point)
 gpus=(0 1 2 3 4 5 6 7)
 source_path="/root/autodl-tmp/blender_code/shadow_neus/blend_files"
 
-root_path="/root/autodl-tmp/gaussian-splatting/new_blender/sh_new"
+root_path="/root/autodl-tmp/gaussian-splatting/nvs/envmap_sh"
 
 cur_idx=0
-tmux_name=directional_light_render
+tmux_name=blender
 tmux new-session -d -s ${tmux_name}
     
 for obj in "${objs[@]}"; do

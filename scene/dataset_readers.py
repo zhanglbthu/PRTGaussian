@@ -232,7 +232,7 @@ def readCamerasFromTransforms(path, transformsfile):
         shift_image = np.zeros((tmp_image.shape))
         
         for idx, frame in tqdm(enumerate(frames)):
-            # if frame["light_idx"] > 2:
+            # if frame["light_idx"] > 1:
             #     continue
 
             image_path = os.path.join(path, frame["file_path"] + '.exr')
