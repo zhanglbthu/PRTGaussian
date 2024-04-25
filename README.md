@@ -19,6 +19,15 @@ Experiments demonstrate that our method achieves good results in terms of qualit
 
 ### Video
 
+<div align="center">
+  <video width="800" height="400" controls>
+    <source src="./assets/rl_hotdog.mp4" type="video/mp4">
+  </video>
+  <br>
+  <video width="800" height="400" controls>
+    <source src="./assets/rl_chair.mp4" type="video/mp4">
+  </video>
+</div>
 ## Usage
 
 ### Setup
