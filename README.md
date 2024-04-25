@@ -28,6 +28,7 @@ Experiments demonstrate that our method achieves good results in terms of qualit
     <source src="./assets/rl_chair.mp4" type="video/mp4">
   </video>
 </div>
+
 ## Usage
 
 ### Setup
