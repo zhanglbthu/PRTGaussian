@@ -7,7 +7,7 @@ Tsinghua University
 
 </div>
 
-### [Project Page]() | [Paper]() | [Video]() | [Dataset]()
+<!-- ### [Project Page]() | [Paper]() | [Video]() | [Dataset]() -->
 ### Abstract
 This work presents Light Transport Gaussian, a method for achieving high-quality real-time relighting from a multi-view, multi-illumination dataset.
 We use 3D Gaussians to represent the geometry of general objects. For each Gaussian we additionally optimize an albedo term and use a network to estimate the SH coefficients of its light transport. 
@@ -18,16 +18,9 @@ Experiments demonstrate that our method achieves good results in terms of qualit
 ![teaser](./assets/pipeline.png)
 
 ### Video
+![hotdog](./assets/hotdog.gif)
 
-<div align="center">
-  <video width="800" height="400" controls>
-    <source src="./assets/rl_hotdog.mp4" type="video/mp4">
-  </video>
-  <br>
-  <video width="800" height="400" controls>
-    <source src="./assets/rl_chair.mp4" type="video/mp4">
-  </video>
-</div>
+![chair](./assets/chair.gif)
 
 ## Usage
 
