@@ -18,6 +18,8 @@ Experiments demonstrate that our method achieves good results in terms of qualit
 ![teaser](./assets/pipeline.png)
 
 ### Video
+The left side is the ground truth and the right side is the rendered image.
+
 ![hotdog](./assets/hotdog.gif)
 
 ![chair](./assets/chair.gif)
