@@ -1,5 +1,5 @@
 <div align="center">
-<h2>Light Transport Gaussian: Relighting 3D Gaussians Based on Precomputed Radiance Transfer</h2>
+<h2>PRTGaussian: Efficient Relighting Using 3D Gaussians with Precomputed Radiance Transfer</h2>
 
 [**Libo Zhang**](https://zhanglbthu.github.io/) · [**Yuxuan Han**](https://yxuhan.github.io/) · [**Wenbin Lin**](https://wenbin-lin.github.io/) · [**Jingwang Ling**](https://gerwang.github.io/) · [**Feng Xu**](http://xufeng.site/)
 
@@ -7,22 +7,28 @@ Tsinghua University
 
 </div>
 
-<!-- ### [Project Page]() | [Paper]() | [Video]() | [Dataset]() -->
+### [Paper](https://www.arxiv.org/abs/2408.05631) | [Dataset](https://drive.google.com/drive/folders/1j4YlmIpuZZjyrXb4QxSI86ZgrIfP6mCr?usp=drive_link)
 ### Abstract
-This work presents Light Transport Gaussian, a method for achieving high-quality real-time relighting from a multi-view, multi-illumination dataset.
-We use 3D Gaussians to represent the geometry of general objects. For each Gaussian we additionally optimize an albedo term and use a network to estimate the SH coefficients of its light transport. 
-We then dot-multiply the albedo, the SH coefficients of the light transport, and the SH coefficients of the light source to get the final color for each Gaussian. The final image is rendered bt Splatting.
-Experiments demonstrate that our method achieves good results in terms of quality and speed of relighting.
+We present PRTGaussian, a realtime relightable novel-view synthesis method made possible by combining 3D Gaussians and Precomputed Radiance Transfer (PRT). 
+By fitting relightable Gaussians to multi-view OLAT data, our method enables real-time, free-viewpoint relighting. 
+By estimating the radiance transfer based on high-order spherical harmonics, we achieve a balance between capturing detailed relighting effects and maintaining computational efficiency. 
+We utilize a two-stage process: in the first stage, we reconstruct a coarse geometry of the object from multi-view images. In the second stage, we initialize 3D Gaussians with the obtained point cloud, then simultaneously refine the coarse geometry and learn the light transport for each Gaussian. 
+Extensive experiments on synthetic datasets show that our approach can achieve fast and high-quality relighting for general objects. Code and data are available at this https URL.
 
 ### Pipeline
 ![teaser](./assets/pipeline.png)
 
-### Video
-The left side is the ground truth and the right side is the rendered image.
+### Results
+**Comparisons**
+<div align="center">
+    <img src="./assets/quantitative.png" width="100%">
+</div>
 
-![hotdog](./assets/hotdog.gif)
+**Qualitative results**
+<div align="center">
+    <img src="./assets/qualitative.png" width="100%">
+</div>
 
-![chair](./assets/chair.gif)
 
 ## Usage
 
